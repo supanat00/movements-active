@@ -8,7 +8,6 @@ interface PoseTrackerProps {
 
 export default function PoseTracker({ onPoseDetected }: PoseTrackerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
   const cameraRef = useRef<any>(null);
   const [isReady, setIsReady] = useState(false);
 
@@ -32,7 +31,7 @@ export default function PoseTracker({ onPoseDetected }: PoseTrackerProps) {
   }, []);
 
   useEffect(() => {
-    if (!isReady || !videoRef.current || !canvasRef.current) return;
+    if (!isReady || !videoRef.current) return;
 
     const { Pose } = (window as any);
 
@@ -50,27 +49,33 @@ export default function PoseTracker({ onPoseDetected }: PoseTrackerProps) {
     });
 
     pose.onResults((results: any) => {
-      if (!canvasRef.current || !videoRef.current) return;
-      const canvasCtx = canvasRef.current.getContext('2d');
-      if (!canvasCtx) return;
+      if (results.poseLandmarks && videoRef.current) {
+        const vW = videoRef.current.videoWidth;
+        const vH = videoRef.current.videoHeight;
+        const cW = window.innerWidth;
+        const cH = window.innerHeight;
+        
+        // Calculate object-cover dimensions to map coordinates correctly
+        const scale = Math.max(cW / vW, cH / vH);
+        const drawW = vW * scale;
+        const drawH = vH * scale;
+        const offsetX = (cW - drawW) / 2;
+        const offsetY = (cH - drawH) / 2;
 
-      // Ensure canvas matches video dimensions for perfect drawing overlay
-      if (canvasRef.current.width !== videoRef.current.videoWidth) {
-        canvasRef.current.width = videoRef.current.videoWidth;
-        canvasRef.current.height = videoRef.current.videoHeight;
+        const mappedLandmarks = results.poseLandmarks.map((lm: any) => {
+           const pixelX = offsetX + (lm.x * drawW);
+           const pixelY = offsetY + (lm.y * drawH);
+           
+           return {
+             ...lm,
+             x: pixelX / cW,
+             y: pixelY / cH
+           };
+        });
+
+        // Pass transformed landmarks up
+        onPoseDetectedRef.current(mappedLandmarks);
       }
-
-      canvasCtx.save();
-      canvasCtx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
-      
-      // Draw the video frame to canvas
-      canvasCtx.drawImage(results.image, 0, 0, canvasRef.current.width, canvasRef.current.height);
-
-      if (results.poseLandmarks) {
-        // Pass landmarks up to calculate exercise logic
-        onPoseDetectedRef.current(results.poseLandmarks);
-      }
-      canvasCtx.restore();
     });
 
     let animationFrameId: number;
@@ -81,9 +86,7 @@ export default function PoseTracker({ onPoseDetected }: PoseTrackerProps) {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
           video: {
-            facingMode: 'user',
-            width: { ideal: 1080 },  // Request FullHD Portrait
-            height: { ideal: 1920 }
+            facingMode: 'user'
           }
         });
         
@@ -142,14 +145,10 @@ export default function PoseTracker({ onPoseDetected }: PoseTrackerProps) {
       )}
       <video 
         ref={videoRef} 
-        className="hidden" 
+        className="w-full h-full object-cover scale-x-[-1]" 
         playsInline 
         autoPlay 
         muted 
-      />
-      <canvas 
-        ref={canvasRef} 
-        className="w-full h-full object-cover scale-x-[-1]" 
       />
     </div>
   );
