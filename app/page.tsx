@@ -9,11 +9,27 @@ import GameUI from './components/GameUI';
 export default function Home() {
   const [gameStatus, setGameStatus] = useState<'idle' | 'countdown' | 'playing' | 'win' | 'lose'>('idle');
   const [currentExercise, setCurrentExercise] = useState<'jumping_jacks' | 'squats' | 'high_knees'>('jumping_jacks');
+  const [gameMode, setGameMode] = useState<'normal' | 'score'>('normal');
+  const [globalTime, setGlobalTime] = useState(30.0);
+  const [exerciseTime, setExerciseTime] = useState(5.0);
+  const [gamePoints, setGamePoints] = useState(0);
+  const [comboCount, setComboCount] = useState(0);
+  const [floatingPoints, setFloatingPoints] = useState<{id: number, text: string, type: 'plus'|'minus'|'bonus'}[]>([]);
+
   const [timeRemaining, setTimeRemaining] = useState(15.0);
   const [score, setScore] = useState(0);
   const [countdown, setCountdown] = useState(3);
-  const targetScore = currentExercise === 'squats' ? 5 : 10;
-  const maxTime = 15.0;
+  const getTargetScore = (mode: 'normal' | 'score', ex: string) => {
+    if (mode === 'score') {
+      if (ex === 'jumping_jacks') return 3;
+      if (ex === 'squats') return 2;
+      return 5;
+    } else {
+      return ex === 'squats' ? 5 : 10;
+    }
+  };
+  const targetScore = getTargetScore(gameMode, currentExercise);
+  const maxTime = gameMode === 'score' ? 30.0 : 15.0;
 
   const currentLandmarks = useRef<any>(null);
 
@@ -25,26 +41,85 @@ export default function Home() {
     lastTime: Date.now()
   });
 
+  // Helper to generate a new random exercise
+  const nextRandomExercise = useCallback(() => {
+    const exercises: Array<'jumping_jacks' | 'squats' | 'high_knees'> = ['jumping_jacks', 'squats', 'high_knees'];
+    const randomExercise = exercises[Math.floor(Math.random() * exercises.length)];
+    setCurrentExercise(randomExercise);
+    setScore(0);
+    setExerciseTime(5.0);
+    poseState.current.isJumping = false;
+    poseState.current.isSquatting = false;
+    poseState.current.lastKneeLifted = null;
+  }, []);
+
+  const addFloatingPoint = useCallback((text: string, type: 'plus'|'minus'|'bonus') => {
+    const id = Date.now();
+    setFloatingPoints(prev => [...prev, { id, text, type }]);
+    setTimeout(() => {
+      setFloatingPoints(prev => prev.filter(p => p.id !== id));
+    }, 1500);
+  }, []);
+
   // Game Loop Timer
   useEffect(() => {
     if (gameStatus === 'playing') {
-      if (score >= targetScore) {
-        setGameStatus('win');
-        return;
+      if (gameMode === 'normal') {
+        if (score >= targetScore) {
+          setGameStatus('win');
+          return;
+        }
+        if (timeRemaining <= 0) {
+          setGameStatus('lose');
+          return;
+        }
+
+        const timer = setInterval(() => {
+          setTimeRemaining((prev) => Math.max(0, prev - 0.1));
+        }, 100);
+        return () => clearInterval(timer);
+      } else if (gameMode === 'score') {
+        if (globalTime <= 0) {
+          setGameStatus('win'); // Use win state to show summary
+          return;
+        }
+        
+        if (score >= targetScore) {
+          const newCombo = comboCount + 1;
+          setComboCount(newCombo);
+          
+          let pointsGained = 1;
+          let pointType: 'plus' | 'bonus' = 'plus';
+          let pointText = '+1';
+          
+          if (newCombo % 3 === 0) {
+            pointsGained = 2;
+            pointType = 'bonus';
+            pointText = '+2 Bonus!';
+          }
+          
+          setGamePoints(prev => prev + pointsGained);
+          addFloatingPoint(pointText, pointType);
+          nextRandomExercise();
+          return;
+        }
+        
+        if (exerciseTime <= 0) {
+          setComboCount(0);
+          setGamePoints(prev => Math.max(0, prev - 1));
+          addFloatingPoint('-1', 'minus');
+          nextRandomExercise();
+          return;
+        }
+
+        const timer = setInterval(() => {
+          setGlobalTime((prev) => Math.max(0, prev - 0.1));
+          setExerciseTime((prev) => Math.max(0, prev - 0.1));
+        }, 100);
+        return () => clearInterval(timer);
       }
-
-      if (timeRemaining <= 0) {
-        setGameStatus('lose');
-        return;
-      }
-
-      const timer = setInterval(() => {
-        setTimeRemaining((prev) => Math.max(0, prev - 0.1));
-      }, 100);
-
-      return () => clearInterval(timer);
     }
-  }, [score, targetScore, gameStatus, timeRemaining]);
+  }, [score, targetScore, gameStatus, timeRemaining, gameMode, globalTime, exerciseTime, comboCount, addFloatingPoint, nextRandomExercise]);
 
   useEffect(() => {
     if (gameStatus === 'countdown') {
@@ -53,7 +128,7 @@ export default function Home() {
         return () => clearTimeout(timer);
       } else {
         setGameStatus('playing');
-        setTimeRemaining(maxTime);
+        if (gameMode === 'normal') setTimeRemaining(maxTime);
         // Reset pose states right when playing starts
         poseState.current.isJumping = false;
         poseState.current.isSquatting = false;
@@ -62,17 +137,36 @@ export default function Home() {
     }
   }, [gameStatus, countdown]);
 
-  const startGame = (exercise?: 'jumping_jacks' | 'squats' | 'high_knees') => {
-    if (!exercise) {
+  const startGame = (mode?: 'normal' | 'score', exercise?: 'jumping_jacks' | 'squats' | 'high_knees') => {
+    if (!mode) {
       setGameStatus('idle');
       setScore(0);
-      setTimeRemaining(maxTime);
+      setTimeRemaining(15.0);
+      setGlobalTime(30.0);
+      setExerciseTime(5.0);
+      setGamePoints(0);
+      setComboCount(0);
+      setFloatingPoints([]);
       return;
     }
     
+    setGameMode(mode);
     setScore(0);
-    setCurrentExercise(exercise);
+    setGamePoints(0);
+    setComboCount(0);
     setCountdown(3);
+    setFloatingPoints([]);
+    
+    if (mode === 'score') {
+      setGlobalTime(30.0);
+      setExerciseTime(5.0);
+      const exercises: Array<'jumping_jacks' | 'squats' | 'high_knees'> = ['jumping_jacks', 'squats', 'high_knees'];
+      setCurrentExercise(exercises[Math.floor(Math.random() * exercises.length)]);
+    } else {
+      setTimeRemaining(15.0);
+      if (exercise) setCurrentExercise(exercise);
+    }
+    
     setGameStatus('countdown');
   };
 
@@ -206,6 +300,12 @@ export default function Home() {
           gameStatus={gameStatus}
           currentExercise={currentExercise}
           countdownValue={countdown}
+          gameMode={gameMode}
+          globalTime={globalTime}
+          exerciseTime={exerciseTime}
+          gamePoints={gamePoints}
+          comboCount={comboCount}
+          floatingPoints={floatingPoints}
           onStart={startGame}
         />
       </div>
