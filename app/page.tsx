@@ -6,6 +6,25 @@ import PoseTracker from './components/PoseTracker';
 import VFXOverlay from './components/VFXOverlay';
 import GameUI from './components/GameUI';
 
+const playExerciseSound = (exercise: string) => {
+  let src = '';
+  if (exercise === 'jumping_jacks') src = '/sound/jump.mp3';
+  else if (exercise === 'squats') src = '/sound/squat.mp3';
+  else if (exercise === 'high_knees') src = '/sound/run.mp3';
+  
+  if (src && typeof Audio !== 'undefined') {
+    const audio = new Audio(src);
+    audio.play().catch(e => console.log('Audio play blocked:', e));
+  }
+};
+
+const playScoreSound = () => {
+  if (typeof Audio !== 'undefined') {
+    const audio = new Audio('/sound/score.mp3');
+    audio.play().catch(e => console.log('Audio play blocked:', e));
+  }
+};
+
 export default function Home() {
   const [gameStatus, setGameStatus] = useState<'idle' | 'countdown' | 'playing' | 'win' | 'lose'>('idle');
   const [currentExercise, setCurrentExercise] = useState<'jumping_jacks' | 'squats' | 'high_knees'>('jumping_jacks');
@@ -41,7 +60,6 @@ export default function Home() {
     lastTime: Date.now()
   });
 
-  // Helper to generate a new random exercise
   const nextRandomExercise = useCallback(() => {
     const exercises: Array<'jumping_jacks' | 'squats' | 'high_knees'> = ['jumping_jacks', 'squats', 'high_knees'];
     const randomExercise = exercises[Math.floor(Math.random() * exercises.length)];
@@ -51,6 +69,8 @@ export default function Home() {
     poseState.current.isJumping = false;
     poseState.current.isSquatting = false;
     poseState.current.lastKneeLifted = null;
+    
+    playExerciseSound(randomExercise);
   }, []);
 
   const addFloatingPoint = useCallback((text: string, type: 'plus'|'minus'|'bonus') => {
@@ -100,6 +120,7 @@ export default function Home() {
           
           setGamePoints(prev => prev + pointsGained);
           addFloatingPoint(pointText, pointType);
+          playScoreSound();
           nextRandomExercise();
           return;
         }
@@ -133,9 +154,13 @@ export default function Home() {
         poseState.current.isJumping = false;
         poseState.current.isSquatting = false;
         poseState.current.lastKneeLifted = null;
+        
+        if (gameMode === 'score') {
+          playExerciseSound(currentExercise);
+        }
       }
     }
-  }, [gameStatus, countdown]);
+  }, [gameStatus, countdown, gameMode, currentExercise]);
 
   const startGame = (mode?: 'normal' | 'score', exercise?: 'jumping_jacks' | 'squats' | 'high_knees') => {
     if (!mode) {
@@ -161,7 +186,8 @@ export default function Home() {
       setGlobalTime(30.0);
       setExerciseTime(5.0);
       const exercises: Array<'jumping_jacks' | 'squats' | 'high_knees'> = ['jumping_jacks', 'squats', 'high_knees'];
-      setCurrentExercise(exercises[Math.floor(Math.random() * exercises.length)]);
+      const randomEx = exercises[Math.floor(Math.random() * exercises.length)];
+      setCurrentExercise(randomEx);
     } else {
       setTimeRemaining(15.0);
       if (exercise) setCurrentExercise(exercise);
