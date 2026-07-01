@@ -12,7 +12,7 @@ export default function Home() {
   const [timeRemaining, setTimeRemaining] = useState(15.0);
   const [score, setScore] = useState(0);
   const [countdown, setCountdown] = useState(3);
-  const targetScore = 10;
+  const targetScore = currentExercise === 'squats' ? 5 : 10;
   const maxTime = 15.0;
 
   const currentLandmarks = useRef<any>(null);
@@ -62,12 +62,16 @@ export default function Home() {
     }
   }, [gameStatus, countdown]);
 
-  const startGame = () => {
-    const exercises: Array<'jumping_jacks' | 'squats' | 'high_knees'> = ['jumping_jacks', 'squats', 'high_knees'];
-    const randomExercise = exercises[Math.floor(Math.random() * exercises.length)];
+  const startGame = (exercise?: 'jumping_jacks' | 'squats' | 'high_knees') => {
+    if (!exercise) {
+      setGameStatus('idle');
+      setScore(0);
+      setTimeRemaining(maxTime);
+      return;
+    }
     
     setScore(0);
-    setCurrentExercise(randomExercise);
+    setCurrentExercise(exercise);
     setCountdown(3);
     setGameStatus('countdown');
   };
@@ -127,14 +131,15 @@ export default function Home() {
       if (!rightHip || !rightKnee || !rightAnkle || !leftHip || !leftKnee || !leftAnkle) return;
       const rightKneeAngle = calculateAngle(rightHip, rightKnee, rightAnkle);
       const leftKneeAngle = calculateAngle(leftHip, leftKnee, leftAnkle);
-      const kneeAngle = Math.min(rightKneeAngle, leftKneeAngle); // Use the most bent knee
+      // Both knees must be bent, so we check the LEAST bent knee (max angle)
+      const maxKneeAngle = Math.max(rightKneeAngle, leftKneeAngle); 
       
-      // Squat: Knee angle < 110 degrees (approx 1.9 rad)
-      if (kneeAngle < 1.9) {
+      // Squat: Both knees bent < 110 degrees (approx 1.9 rad)
+      if (maxKneeAngle < 1.9) {
         state.isSquatting = true;
       } 
-      // Stand: Knee angle > 150 degrees (approx 2.6 rad)
-      else if (state.isSquatting && kneeAngle > 2.6) {
+      // Stand: Both knees straightened > 150 degrees (approx 2.6 rad)
+      else if (state.isSquatting && rightKneeAngle > 2.5 && leftKneeAngle > 2.5) {
         state.isSquatting = false;
         if (now - state.lastTime > 500) {
           setScore((prev) => prev + 1);

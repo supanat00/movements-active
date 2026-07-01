@@ -10,7 +10,7 @@ interface GameUIProps {
   gameStatus: 'idle' | 'countdown' | 'playing' | 'win' | 'lose';
   currentExercise: 'jumping_jacks' | 'squats' | 'high_knees';
   countdownValue?: number;
-  onStart: () => void;
+  onStart: (exercise?: 'jumping_jacks' | 'squats' | 'high_knees') => void;
 }
 
 export default function GameUI({ timeRemaining, maxTime, score, targetScore, gameStatus, currentExercise, countdownValue, onStart }: GameUIProps) {
@@ -75,12 +75,29 @@ export default function GameUI({ timeRemaining, maxTime, score, targetScore, gam
       {/* Bottom Action Area */}
       <div className="w-full flex flex-col items-center justify-end pb-8 pointer-events-auto">
         {gameStatus === 'idle' && (
-          <button 
-            onClick={onStart}
-            className="w-full max-w-xs bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-400 hover:to-emerald-500 text-white font-black py-5 px-6 rounded-3xl shadow-[0_10px_25px_rgba(16,185,129,0.5)] text-xl animate-bounce active:scale-95 transition-transform"
-          >
-            START CHALLENGE
-          </button>
+          <div className="w-full max-w-sm flex flex-col gap-3 px-4">
+             <div className="bg-black/40 backdrop-blur-sm rounded-xl py-2 mb-2">
+               <h3 className="text-white text-center font-bold">เลือกท่าที่ต้องการทดสอบ:</h3>
+             </div>
+             <button 
+               onClick={() => onStart('jumping_jacks')}
+               className="w-full bg-gradient-to-r from-blue-500 to-indigo-600 hover:from-blue-400 hover:to-indigo-500 text-white font-bold py-4 px-6 rounded-2xl shadow-[0_10px_25px_rgba(59,130,246,0.5)] text-lg active:scale-95 transition-transform"
+             >
+               กระโดดตบ (Jumping Jacks)
+             </button>
+             <button 
+               onClick={() => onStart('squats')}
+               className="w-full bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-400 hover:to-emerald-500 text-white font-bold py-4 px-6 rounded-2xl shadow-[0_10px_25px_rgba(16,185,129,0.5)] text-lg active:scale-95 transition-transform"
+             >
+               สควอท (Squats)
+             </button>
+             <button 
+               onClick={() => onStart('high_knees')}
+               className="w-full bg-gradient-to-r from-orange-500 to-red-600 hover:from-orange-400 hover:to-red-500 text-white font-bold py-4 px-6 rounded-2xl shadow-[0_10px_25px_rgba(249,115,22,0.5)] text-lg active:scale-95 transition-transform"
+             >
+               วิ่งอยู่กับที่ (High Knees)
+             </button>
+          </div>
         )}
 
         {gameStatus === 'win' && (
@@ -91,10 +108,10 @@ export default function GameUI({ timeRemaining, maxTime, score, targetScore, gam
             <h2 className="text-3xl font-black text-transparent bg-clip-text bg-gradient-to-r from-green-600 to-blue-500 mb-2">FRESH!</h2>
             <p className="text-sm font-medium text-gray-600 mb-6">You successfully cleared all the musty smell!</p>
             <button 
-              onClick={onStart}
+              onClick={() => onStart()}
               className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 px-6 rounded-2xl shadow-lg text-lg active:scale-95 transition-transform"
             >
-              Play Again
+              กลับไปหน้าเลือกท่า
             </button>
           </div>
         )}
@@ -107,10 +124,10 @@ export default function GameUI({ timeRemaining, maxTime, score, targetScore, gam
             <h2 className="text-3xl font-black text-red-500 mb-2">GAME OVER</h2>
             <p className="text-sm font-medium text-gray-300 mb-6">The musty smell took over.</p>
             <button 
-              onClick={onStart}
+              onClick={() => onStart()}
               className="w-full bg-gray-100 hover:bg-white text-gray-900 font-bold py-4 px-6 rounded-2xl shadow-lg text-lg active:scale-95 transition-transform"
             >
-              Try Again
+              กลับไปหน้าเลือกท่า
             </button>
           </div>
         )}
