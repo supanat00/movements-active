@@ -242,24 +242,28 @@ export default function Home() {
       }
     }
     else if (currentExercise === 'high_knees') {
-      if (!rightHip || !rightKnee || !leftHip || !leftKnee) return;
+      if (!rightHip || !rightKnee || !leftHip || !leftKnee || !rightAnkle || !leftAnkle) return;
       
-      // For light jogging, we don't need absolute angles or Z-depth.
-      // We simply compare the height (Y-axis) of the two knees. 
-      // If one knee is significantly higher (smaller Y) than the other, it's lifted.
-      // 0.04 means 4% of the screen height, perfect for a very light jog.
-      const rightKneeForward = rightKnee.y < leftKnee.y - 0.04;
-      const leftKneeForward = leftKnee.y < rightKnee.y - 0.04;
+      // Calculate leg length to make the threshold dynamic based on user's distance from camera
+      const rightLegLength = rightAnkle.y - rightHip.y;
+      const leftLegLength = leftAnkle.y - leftHip.y;
+      const avgLegLength = (rightLegLength + leftLegLength) / 2;
+      
+      // Threshold is 25% of the leg length, but at least 8% of the screen height to prevent noise triggers
+      const threshold = Math.max(0.08, avgLegLength * 0.25);
+
+      const rightKneeForward = rightKnee.y < leftKnee.y - threshold;
+      const leftKneeForward = leftKnee.y < rightKnee.y - threshold;
 
       if (rightKneeForward && state.lastKneeLifted !== 'right') {
         state.lastKneeLifted = 'right';
-        if (now - state.lastTime > 200) {
+        if (now - state.lastTime > 250) {
           setScore((prev) => prev + 1);
           state.lastTime = now;
         }
       } else if (leftKneeForward && state.lastKneeLifted !== 'left') {
         state.lastKneeLifted = 'left';
-        if (now - state.lastTime > 200) {
+        if (now - state.lastTime > 250) {
           setScore((prev) => prev + 1);
           state.lastTime = now;
         }
