@@ -48,15 +48,30 @@ export default function PoseTracker({
     if (gameStatus === 'countdown' || gameStatus === 'playing') {
       if (canvasRef.current && !mediaRecorderRef.current) {
         // Record from the Canvas at 30 FPS instead of the raw video
-        const stream = canvasRef.current.captureStream(30);
+        const videoStream = canvasRef.current.captureStream(60);
+        const audioStream = (window as any).gameAudioStream as MediaStream;
+        
+        let combinedStream = videoStream;
+        if (audioStream) {
+           const tracks = [...videoStream.getVideoTracks(), ...audioStream.getAudioTracks()];
+           combinedStream = new MediaStream(tracks);
+        }
         
         try {
-          mediaRecorderRef.current = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp8,opus' });
+          mediaRecorderRef.current = new MediaRecorder(combinedStream, { 
+            mimeType: 'video/webm;codecs=vp8,opus',
+            videoBitsPerSecond: 8000000 // 8 Mbps for high quality
+          });
         } catch (e) {
           try {
-            mediaRecorderRef.current = new MediaRecorder(stream, { mimeType: 'video/webm' });
+            mediaRecorderRef.current = new MediaRecorder(combinedStream, { 
+              mimeType: 'video/webm',
+              videoBitsPerSecond: 8000000
+            });
           } catch (e2) {
-            mediaRecorderRef.current = new MediaRecorder(stream); 
+            mediaRecorderRef.current = new MediaRecorder(combinedStream, {
+              videoBitsPerSecond: 8000000
+            }); 
           }
         }
         
@@ -414,15 +429,15 @@ export default function PoseTracker({
       )}
       <video 
         ref={videoRef} 
-        className="w-full h-full object-cover scale-x-[-1]" 
+        className="absolute top-0 left-0 w-0 h-0 opacity-0 pointer-events-none" 
         playsInline 
         autoPlay 
         muted 
       />
-      {/* Hidden canvas for recording */}
+      {/* Visible canvas for BOTH playing and recording */}
       <canvas 
         ref={canvasRef} 
-        className="absolute top-0 left-0 w-full h-full object-cover pointer-events-none opacity-0" 
+        className="absolute top-0 left-0 w-full h-full object-cover pointer-events-none" 
       />
     </div>
   );

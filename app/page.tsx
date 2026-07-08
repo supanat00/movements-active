@@ -8,23 +8,48 @@ import PoseTracker from './components/PoseTracker';
 import VFXOverlay from './components/VFXOverlay';
 import GameUI from './components/GameUI';
 
+let audioCtx: AudioContext | null = null;
+let audioDest: MediaStreamAudioDestinationNode | null = null;
+
+const initAudioContext = () => {
+  if (!audioCtx && typeof window !== 'undefined') {
+    audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+    audioDest = audioCtx.createMediaStreamDestination();
+    (window as any).gameAudioStream = audioDest.stream;
+  }
+  if (audioCtx?.state === 'suspended') {
+    audioCtx.resume();
+  }
+};
+
+const playRoutedSound = (src: string) => {
+  if (typeof Audio === 'undefined') return;
+  const audio = new Audio(src);
+  audio.crossOrigin = "anonymous";
+  
+  if (audioCtx && audioDest) {
+    try {
+      const source = audioCtx.createMediaElementSource(audio);
+      source.connect(audioCtx.destination);
+      source.connect(audioDest);
+    } catch (e) {
+      console.error("Audio routing failed", e);
+    }
+  }
+  audio.play().catch(e => console.log('Audio play blocked:', e));
+};
+
 const playExerciseSound = (exercise: string) => {
   let src = '';
   if (exercise === 'jumping_jacks') src = '/sound/jump.mp3';
   else if (exercise === 'squats') src = '/sound/squat.mp3';
   else if (exercise === 'high_knees') src = '/sound/run.mp3';
   
-  if (src && typeof Audio !== 'undefined') {
-    const audio = new Audio(src);
-    audio.play().catch(e => console.log('Audio play blocked:', e));
-  }
+  if (src) playRoutedSound(src);
 };
 
 const playScoreSound = () => {
-  if (typeof Audio !== 'undefined') {
-    const audio = new Audio('/sound/score.mp3');
-    audio.play().catch(e => console.log('Audio play blocked:', e));
-  }
+  playRoutedSound('/sound/score.mp3');
 };
 
 export default function Home() {
@@ -109,7 +134,14 @@ export default function Home() {
       if (!ffmpeg.loaded) await loadFfmpeg();
 
       await ffmpeg.writeFile("input.webm", await fetchFile(rawVideoBlob));
-      await ffmpeg.exec(["-i", "input.webm", "-preset", "ultrafast", "output.mp4"]);
+      await ffmpeg.exec([
+        "-i", "input.webm", 
+        "-c:v", "libx264",
+        "-preset", "ultrafast", 
+        "-crf", "22",
+        "-r", "60",
+        "output.mp4"
+      ]);
       
       const data = await ffmpeg.readFile("output.mp4") as any;
       const url = URL.createObjectURL(new Blob([data.buffer], { type: "video/mp4" }));
@@ -174,82 +206,60 @@ export default function Home() {
     }, 1500);
   }, []);
 
-  // Timer for Score mode
+  // 1. Single Timer loop for ALL time decrement
   useEffect(() => {
     let timer: NodeJS.Timeout;
-    if (gameStatus === 'playing' && gameMode === 'score') {
+    if (gameStatus === 'playing') {
       timer = setInterval(() => {
-        setGlobalTime((prev) => {
-          if (prev <= 0.1) {
-            clearInterval(timer);
-            setGameStatus('ending');
-            setTimeout(() => setGameStatus('preview'), 2000);
-            return 0;
-          }
-          return prev - 0.1;
-        });
+        if (gameMode === 'normal') {
+          setTimeRemaining((prev) => Math.max(0, prev - 0.1));
+        } else if (gameMode === 'score') {
+          setGlobalTime((prev) => Math.max(0, prev - 0.1));
+          setExerciseTime((prev) => Math.max(0, prev - 0.1));
+        }
       }, 100);
     }
     return () => clearInterval(timer);
   }, [gameStatus, gameMode]);
 
-  // Game Loop Timer
+  // 2. Game Logic check loop (watches state changes)
   useEffect(() => {
-    if (gameStatus === 'playing') {
-      if (gameMode === 'normal') {
-        if (score >= targetScore) {
-          setGameStatus('win');
-          return;
-        }
-        if (timeRemaining <= 0) {
-          setGameStatus('lose');
-          return;
-        }
+    if (gameStatus !== 'playing') return;
 
-        const timer = setInterval(() => {
-          setTimeRemaining((prev) => Math.max(0, prev - 0.1));
-        }, 100);
-        return () => clearInterval(timer);
-      } else if (gameMode === 'score') {
-        if (globalTime <= 0) {
-          setGameStatus('win'); // Use win state to show summary
-          return;
+    if (gameMode === 'normal') {
+      if (score >= targetScore) {
+        setGameStatus('win');
+      } else if (timeRemaining <= 0) {
+        setGameStatus('lose');
+      }
+    } else if (gameMode === 'score') {
+      if (globalTime <= 0) {
+        // End the game
+        setGameStatus('ending');
+        setTimeout(() => setGameStatus('preview'), 2000);
+      } else if (score >= targetScore) {
+        const newCombo = comboCount + 1;
+        setComboCount(newCombo);
+        
+        let pointsGained = 1;
+        let pointType: 'plus' | 'bonus' = 'plus';
+        let pointText = '+1';
+        
+        if (newCombo % 3 === 0) {
+          pointsGained = 2;
+          pointType = 'bonus';
+          pointText = '+2 Bonus!';
         }
         
-        if (score >= targetScore) {
-          const newCombo = comboCount + 1;
-          setComboCount(newCombo);
-          
-          let pointsGained = 1;
-          let pointType: 'plus' | 'bonus' = 'plus';
-          let pointText = '+1';
-          
-          if (newCombo % 3 === 0) {
-            pointsGained = 2;
-            pointType = 'bonus';
-            pointText = '+2 Bonus!';
-          }
-          
-          setGamePoints(prev => prev + pointsGained);
-          addFloatingPoint(pointText, pointType);
-          playScoreSound();
-          nextRandomExercise();
-          return;
-        }
-        
-        if (exerciseTime <= 0) {
-          setComboCount(0);
-          setGamePoints(prev => Math.max(0, prev - 1));
-          addFloatingPoint('-1', 'minus');
-          nextRandomExercise();
-          return;
-        }
-
-        const timer = setInterval(() => {
-          setGlobalTime((prev) => Math.max(0, prev - 0.1));
-          setExerciseTime((prev) => Math.max(0, prev - 0.1));
-        }, 100);
-        return () => clearInterval(timer);
+        setGamePoints(prev => prev + pointsGained);
+        addFloatingPoint(pointText, pointType);
+        playScoreSound();
+        nextRandomExercise();
+      } else if (exerciseTime <= 0) {
+        setComboCount(0);
+        setGamePoints(prev => Math.max(0, prev - 1));
+        addFloatingPoint('-1', 'minus');
+        nextRandomExercise();
       }
     }
   }, [score, targetScore, gameStatus, timeRemaining, gameMode, globalTime, exerciseTime, comboCount, addFloatingPoint, nextRandomExercise]);
@@ -275,6 +285,7 @@ export default function Home() {
   }, [gameStatus, countdown, gameMode, currentExercise]);
 
   const startGame = (mode?: 'normal' | 'score', exercise?: 'jumping_jacks' | 'squats' | 'high_knees') => {
+    initAudioContext();
     if (!mode) {
       setGameStatus('idle');
       setScore(0);
@@ -414,63 +425,74 @@ export default function Home() {
   }, [gameStatus, currentExercise]);
 
   return (
-    <main className="relative flex h-[100dvh] w-full flex-col items-center justify-center bg-gray-900 overflow-hidden touch-none">
+    <main className="fixed inset-0 flex items-center justify-center bg-gray-950 font-sans overflow-hidden touch-none">
       <Script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" strategy="afterInteractive" />
       
-      {/* Overlay Effects */}
-      <div className="absolute inset-0 z-10 pointer-events-none">
-        <VFXOverlay 
-          timeRemaining={timeRemaining} 
-          maxTime={maxTime} 
-          score={score}
-          targetScore={targetScore}
-          gameStatus={gameStatus} 
-          currentLandmarks={currentLandmarks}
-        />
-      </div>
+      {/* 9:16 Aspect Ratio Container */}
+      <div 
+        className="relative bg-black overflow-hidden shadow-2xl flex-shrink-0"
+        style={{ 
+          width: '100%', 
+          height: '100%', 
+          maxWidth: 'calc(100dvh * (9/16))', 
+          maxHeight: 'calc(100vw * (16/9))' 
+        }}
+      >
+        {/* Overlay Effects */}
+        <div className="absolute inset-0 z-10 pointer-events-none">
+          <VFXOverlay 
+            timeRemaining={timeRemaining} 
+            maxTime={maxTime} 
+            score={score}
+            targetScore={targetScore}
+            gameStatus={gameStatus} 
+            currentLandmarks={currentLandmarks}
+          />
+        </div>
 
-      {/* Main Content (Camera) */}
-      <div className="absolute inset-0 z-0">
-        <PoseTracker 
-          onPoseDetected={handlePoseDetected} 
-          gameStatus={gameStatus}
-          onRecordingComplete={handleRecordingComplete}
-          gamePoints={gamePoints}
-          globalTime={globalTime}
-          gameMode={gameMode}
-          currentExercise={currentExercise}
-          countdownValue={countdown}
-          score={score}
-          targetScore={targetScore}
-          timeRemaining={timeRemaining}
-          exerciseTime={exerciseTime}
-          comboCount={comboCount}
-          floatingPoints={floatingPoints}
-        />
-      </div>
+        {/* Main Content (Camera) */}
+        <div className="absolute inset-0 z-0">
+          <PoseTracker 
+            onPoseDetected={handlePoseDetected} 
+            gameStatus={gameStatus}
+            onRecordingComplete={handleRecordingComplete}
+            gamePoints={gamePoints}
+            globalTime={globalTime}
+            gameMode={gameMode}
+            currentExercise={currentExercise}
+            countdownValue={countdown}
+            score={score}
+            targetScore={targetScore}
+            timeRemaining={timeRemaining}
+            exerciseTime={exerciseTime}
+            comboCount={comboCount}
+            floatingPoints={floatingPoints}
+          />
+        </div>
 
-      {/* UI Overlay */}
-      <div className="absolute inset-0 z-20 pointer-events-none">
-        <GameUI 
-          timeRemaining={timeRemaining}
-          maxTime={maxTime}
-          score={score}
-          targetScore={targetScore}
-          gameStatus={gameStatus}
-          currentExercise={currentExercise}
-          countdownValue={countdown}
-          gameMode={gameMode}
-          globalTime={globalTime}
-          exerciseTime={exerciseTime}
-          gamePoints={gamePoints}
-          comboCount={comboCount}
-          floatingPoints={floatingPoints}
-          recordedVideoUrl={recordedVideoUrl}
-          isProcessingVideo={isProcessingVideo}
-          onStart={startGame}
-          onSave={handleSave}
-          onShare={handleShare}
-        />
+        {/* UI Overlay */}
+        <div className="absolute inset-0 z-20 pointer-events-none">
+          <GameUI 
+            timeRemaining={timeRemaining}
+            maxTime={maxTime}
+            score={score}
+            targetScore={targetScore}
+            gameStatus={gameStatus}
+            currentExercise={currentExercise}
+            countdownValue={countdown}
+            gameMode={gameMode}
+            globalTime={globalTime}
+            exerciseTime={exerciseTime}
+            gamePoints={gamePoints}
+            comboCount={comboCount}
+            floatingPoints={floatingPoints}
+            recordedVideoUrl={recordedVideoUrl}
+            isProcessingVideo={isProcessingVideo}
+            onStart={startGame}
+            onSave={handleSave}
+            onShare={handleShare}
+          />
+        </div>
       </div>
     </main>
   );

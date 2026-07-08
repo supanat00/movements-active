@@ -39,20 +39,42 @@ export default function GameUI({
 
   const [showHowToPlay, setShowHowToPlay] = useState(true);
 
-  const VideoResult = () => (
-    <div className="mt-2 mb-6 w-full flex justify-center">
-      {recordedVideoUrl ? (
-        <div className="flex flex-col gap-4 w-full max-w-[280px]">
-          <div className="w-full aspect-[9/16] rounded-2xl shadow-xl border border-gray-600 bg-black overflow-hidden relative">
-            <video 
-              src={recordedVideoUrl} 
-              className="absolute inset-0 w-full h-full object-cover"
-              autoPlay 
-              loop 
-              muted 
-              playsInline
-            />
-          </div>
+  const VideoResult = () => {
+    const [isMuted, setIsMuted] = React.useState(false);
+    const videoRef = React.useRef<HTMLVideoElement>(null);
+
+    const toggleMute = () => {
+      if (videoRef.current) {
+        videoRef.current.muted = !videoRef.current.muted;
+        setIsMuted(videoRef.current.muted);
+      }
+    };
+
+    return (
+      <div className="mt-2 mb-6 w-full flex justify-center">
+        {recordedVideoUrl ? (
+          <div className="flex flex-col gap-4 w-full max-w-[280px]">
+            <div className="w-full aspect-[9/16] rounded-2xl shadow-xl border border-gray-600 bg-black overflow-hidden relative group">
+              <video 
+                ref={videoRef}
+                src={recordedVideoUrl} 
+                className="absolute inset-0 w-full h-full object-cover"
+                autoPlay 
+                loop 
+                playsInline
+                muted={isMuted}
+              />
+              <button
+                onClick={toggleMute}
+                className="absolute top-3 right-3 w-10 h-10 bg-black/40 hover:bg-black/70 backdrop-blur-md rounded-full flex items-center justify-center text-white transition-all shadow-lg active:scale-95 opacity-80 hover:opacity-100"
+              >
+                {isMuted ? (
+                  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><line x1="23" y1="9" x2="17" y2="15"></line><line x1="17" y1="9" x2="23" y2="15"></line></svg>
+                ) : (
+                  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path><path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path></svg>
+                )}
+              </button>
+            </div>
           <div className="flex gap-2">
             <button onClick={onSave} disabled={isProcessingVideo} className="flex-1 flex items-center justify-center gap-2 bg-gray-800 hover:bg-black text-white font-bold py-3 px-2 rounded-xl shadow-md text-sm transition-transform active:scale-95 disabled:opacity-50 disabled:active:scale-100">
                {isProcessingVideo ? 'รอสักครู่...' : '⬇️ บันทึก'}
@@ -65,102 +87,14 @@ export default function GameUI({
       ) : null}
     </div>
   );
+};
 
   return (
-    <div className="absolute inset-0 w-full h-[100dvh] pointer-events-none flex flex-col justify-between p-4 safe-area-pt overflow-hidden">
+    <div className="absolute inset-0 w-full h-full pointer-events-none flex flex-col justify-between p-4 safe-area-pt overflow-hidden">
       
-      {/* Floating Points Animations */}
-      {floatingPoints.map(fp => (
-        <div 
-          key={fp.id} 
-          className={`absolute left-1/2 top-1/3 -translate-x-1/2 -translate-y-1/2 text-5xl font-black drop-shadow-[0_5px_15px_rgba(0,0,0,0.8)] animate-in fade-in slide-in-from-bottom-10 zoom-in duration-500 pointer-events-none z-50
-            ${fp.type === 'plus' ? 'text-green-400' : 
-              fp.type === 'bonus' ? 'text-yellow-400 scale-125' : 'text-red-500'}`}
-        >
-          {fp.text}
-        </div>
-      ))}
+      {/* Floating Points Animations (Now handled by Canvas) */}
 
-      {/* Top Bar: Timer and Meter (Mobile Layout) - Hidden on idle */}
-      {gameStatus !== 'idle' && (
-        <div className="flex flex-col gap-3 w-full mt-4">
-          {gameMode === 'normal' ? (
-            <div className="flex justify-center w-full">
-              <div className="bg-white/90 backdrop-blur rounded-full px-6 py-2 shadow-xl border border-gray-100">
-                <span className="text-3xl font-black text-red-600 tracking-tighter">
-                  {timeRemaining.toFixed(1)}s
-                </span>
-              </div>
-            </div>
-          ) : (
-            <div className="flex justify-between w-full px-2">
-              <div className="bg-gray-900/90 backdrop-blur rounded-2xl px-6 py-2 border-2 border-yellow-400 shadow-[0_0_15px_rgba(250,204,21,0.4)]">
-                <span className="block text-[11px] text-yellow-400 font-bold uppercase tracking-widest text-center">Score</span>
-                <span className="block text-4xl font-black text-white text-center leading-none">{gamePoints}</span>
-              </div>
-              <div className="bg-white/95 backdrop-blur rounded-2xl px-6 py-2 shadow-xl border border-gray-100 flex flex-col justify-center">
-                 <span className="block text-[11px] text-gray-500 font-bold uppercase tracking-widest text-center">Time Left</span>
-                 <span className="block text-4xl font-black text-red-600 text-center leading-none">{globalTime.toFixed(1)}s</span>
-              </div>
-            </div>
-          )}
-          
-          {/* Clean Meter */}
-          <div className="w-full max-w-sm mx-auto bg-black/60 p-3 rounded-2xl backdrop-blur-md border border-white/10">
-            <div className="flex justify-between items-end mb-1 px-1">
-              <span className="text-xs font-bold text-white uppercase tracking-wider">
-                 {gameMode === 'score' ? `🔥 Combo: ${comboCount}` : 'Clean Meter'}
-              </span>
-              <span className="text-sm font-black text-green-400 drop-shadow-md">
-                 {gameMode === 'score' ? `${score}/${targetScore}` : `${Math.round(cleanPercentage)}%`}
-              </span>
-            </div>
-            <div className="h-5 w-full bg-gray-800 rounded-full overflow-hidden shadow-inner border border-white/20">
-              <div 
-                className="h-full bg-gradient-to-r from-blue-500 to-green-400 transition-all duration-300 ease-out"
-                style={{ width: `${cleanPercentage}%` }}
-              />
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Exercise Instructions (when playing) */}
-      {gameStatus === 'countdown' && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none z-30">
-          <h2 className="text-white font-bold text-2xl drop-shadow-md mb-4 uppercase">
-            เตรียมตัว {getExerciseName()}!
-          </h2>
-          <div className="text-9xl font-black text-white drop-shadow-[0_0_30px_rgba(34,197,94,0.8)] animate-ping">
-            {countdownValue}
-          </div>
-        </div>
-      )}
-
-      {gameStatus === 'playing' && (
-        <div className="absolute bottom-12 left-1/2 -translate-x-1/2 flex flex-col items-center pointer-events-none w-full z-30 px-4">
-          <div className="flex items-center justify-center gap-4 bg-black/80 px-8 py-3 rounded-full backdrop-blur-md border border-white/20 shadow-2xl">
-            <p className="text-white font-bold text-2xl drop-shadow-md uppercase">
-              {getExerciseName()}
-            </p>
-            <div className="text-2xl text-green-400 font-black">
-              {score} / {targetScore}
-            </div>
-          </div>
-          
-          {gameMode === 'score' && (
-            <div className="mt-4 flex items-center justify-center gap-3 bg-black/70 px-5 py-2 rounded-full backdrop-blur-md shadow-2xl border border-white/20 w-64">
-               <div className="flex-1 h-3 bg-gray-800 rounded-full overflow-hidden shadow-inner">
-                 <div 
-                   className={`h-full transition-all duration-100 ease-linear ${exerciseTime < 2 ? 'bg-red-500' : 'bg-orange-400'}`}
-                   style={{ width: `${(exerciseTime / 5) * 100}%` }}
-                 />
-               </div>
-               <span className="text-white font-black text-xl w-12 text-right">{exerciseTime.toFixed(1)}s</span>
-            </div>
-          )}
-        </div>
-      )}
+      {/* Playing UI is now rendered on Canvas, so no DOM UI needed for countdown and playing */}
 
       {/* Main Menu Overlay (Centered) */}
       {gameStatus === 'idle' && (
@@ -265,13 +199,7 @@ export default function GameUI({
         )}
       </div>
 
-      {/* Ending Overlay */}
-      {gameStatus === 'ending' && (
-        <div className="absolute inset-0 z-40 flex flex-col items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in zoom-in duration-300">
-          <div className="text-[120px] mb-4 animate-[bounce_1s_ease-in-out_infinite] drop-shadow-[0_0_30px_rgba(255,255,0,0.8)]">🏆</div>
-          <div className="text-6xl font-black text-yellow-400 drop-shadow-[0_5px_5px_rgba(0,0,0,1)] tracking-widest">SCORE: {gamePoints}</div>
-        </div>
-      )}
+      {/* Ending Overlay (Now handled by Canvas) */}
 
       {/* Preview Full Screen */}
       {gameStatus === 'preview' && (
@@ -324,6 +252,20 @@ export default function GameUI({
             >
               เข้าใจแล้ว เริ่มเลย!
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Video Processing Overlay */}
+      {isProcessingVideo && (
+        <div className="absolute inset-0 z-[100] flex flex-col items-center justify-center bg-black/80 backdrop-blur-md pointer-events-auto">
+          <div className="bg-gray-900 border border-gray-700 p-8 rounded-3xl shadow-2xl flex flex-col items-center text-center max-w-sm mx-4 animate-in zoom-in-95 duration-300">
+            <div className="relative w-20 h-20 mb-6">
+               <div className="absolute inset-0 border-4 border-gray-700 rounded-full"></div>
+               <div className="absolute inset-0 border-4 border-blue-500 rounded-full border-t-transparent animate-spin"></div>
+            </div>
+            <h3 className="text-2xl font-black text-white mb-2 uppercase">กำลังประมวลผล...</h3>
+            <p className="text-gray-400 text-sm">กรุณารอสักครู่ ระบบกำลังแปลงไฟล์วิดีโอคุณภาพสูง</p>
           </div>
         </div>
       )}
