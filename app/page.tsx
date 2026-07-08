@@ -2,6 +2,8 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import Script from 'next/script';
+import { FFmpeg } from '@ffmpeg/ffmpeg';
+import { fetchFile, toBlobURL } from '@ffmpeg/util';
 import PoseTracker from './components/PoseTracker';
 import VFXOverlay from './components/VFXOverlay';
 import GameUI from './components/GameUI';
@@ -26,14 +28,20 @@ const playScoreSound = () => {
 };
 
 export default function Home() {
-  const [gameStatus, setGameStatus] = useState<'idle' | 'countdown' | 'playing' | 'win' | 'lose'>('idle');
+  const [gameStatus, setGameStatus] = useState<'idle' | 'countdown' | 'playing' | 'ending' | 'preview' | 'win' | 'lose'>('idle');
   const [currentExercise, setCurrentExercise] = useState<'jumping_jacks' | 'squats' | 'high_knees'>('jumping_jacks');
   const [gameMode, setGameMode] = useState<'normal' | 'score'>('normal');
-  const [globalTime, setGlobalTime] = useState(30.0);
+  const [globalTime, setGlobalTime] = useState(5.0);
   const [exerciseTime, setExerciseTime] = useState(5.0);
   const [gamePoints, setGamePoints] = useState(0);
   const [comboCount, setComboCount] = useState(0);
   const [floatingPoints, setFloatingPoints] = useState<{id: number, text: string, type: 'plus'|'minus'|'bonus'}[]>([]);
+
+  const [recordedVideoUrl, setRecordedVideoUrl] = useState<string | null>(null);
+  const [isProcessingVideo, setIsProcessingVideo] = useState(false);
+  const [rawVideoBlob, setRawVideoBlob] = useState<Blob | null>(null);
+  const [processedVideoUrl, setProcessedVideoUrl] = useState<string | null>(null);
+  const ffmpegRef = useRef<FFmpeg | null>(null);
 
   const [timeRemaining, setTimeRemaining] = useState(15.0);
   const [score, setScore] = useState(0);
@@ -60,6 +68,91 @@ export default function Home() {
     lastTime: Date.now()
   });
 
+  const loadFfmpeg = async () => {
+    const baseURL = "https://unpkg.com/@ffmpeg/core@0.12.10/dist/umd";
+    if (!ffmpegRef.current) {
+      ffmpegRef.current = new FFmpeg();
+    }
+    const ffmpeg = ffmpegRef.current;
+    if (!ffmpeg.loaded) {
+      await ffmpeg.load({
+        coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, "text/javascript"),
+        wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, "application/wasm"),
+      });
+    }
+  };
+
+  useEffect(() => {
+    // Preload ffmpeg on mount
+    loadFfmpeg().catch(console.error);
+  }, []);
+
+  const handleRecordingComplete = (blob: Blob) => {
+    console.log("Recording complete! Type:", blob.type);
+    setRawVideoBlob(blob);
+    setRecordedVideoUrl(URL.createObjectURL(blob));
+    setProcessedVideoUrl(null);
+  };
+
+  const processVideoToMp4 = async (): Promise<string | null> => {
+    if (processedVideoUrl) return processedVideoUrl;
+    if (!rawVideoBlob) return null;
+    
+    if (rawVideoBlob.type.includes('mp4')) {
+      return recordedVideoUrl;
+    }
+
+    setIsProcessingVideo(true);
+    try {
+      if (!ffmpegRef.current) await loadFfmpeg();
+      const ffmpeg = ffmpegRef.current!;
+      if (!ffmpeg.loaded) await loadFfmpeg();
+
+      await ffmpeg.writeFile("input.webm", await fetchFile(rawVideoBlob));
+      await ffmpeg.exec(["-i", "input.webm", "-preset", "ultrafast", "output.mp4"]);
+      
+      const data = await ffmpeg.readFile("output.mp4") as any;
+      const url = URL.createObjectURL(new Blob([data.buffer], { type: "video/mp4" }));
+      setProcessedVideoUrl(url);
+      return url;
+    } catch (err) {
+      console.error("FFmpeg processing error:", err);
+      return recordedVideoUrl;
+    } finally {
+      setIsProcessingVideo(false);
+    }
+  };
+
+  const handleSave = async () => {
+    const url = await processVideoToMp4();
+    if (url) {
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'active-movement.mp4';
+      a.click();
+    }
+  };
+
+  const handleShare = async () => {
+    const url = await processVideoToMp4();
+    if (navigator.share && url) {
+      try {
+        const response = await fetch(url);
+        const blob = await response.blob();
+        const file = new File([blob], 'active-movement.mp4', { type: "video/mp4" });
+        if (navigator.canShare && navigator.canShare({ files: [file] })) {
+          await navigator.share({
+            title: 'Active Movement Workout!',
+            text: 'I just finished a workout challenge on Active Movement! 🔥',
+            files: [file]
+          });
+        }
+      } catch (err) {
+        console.log("Share error:", err);
+      }
+    }
+  };
+
   const nextRandomExercise = useCallback(() => {
     const exercises: Array<'jumping_jacks' | 'squats' | 'high_knees'> = ['jumping_jacks', 'squats', 'high_knees'];
     const randomExercise = exercises[Math.floor(Math.random() * exercises.length)];
@@ -80,6 +173,25 @@ export default function Home() {
       setFloatingPoints(prev => prev.filter(p => p.id !== id));
     }, 1500);
   }, []);
+
+  // Timer for Score mode
+  useEffect(() => {
+    let timer: NodeJS.Timeout;
+    if (gameStatus === 'playing' && gameMode === 'score') {
+      timer = setInterval(() => {
+        setGlobalTime((prev) => {
+          if (prev <= 0.1) {
+            clearInterval(timer);
+            setGameStatus('ending');
+            setTimeout(() => setGameStatus('preview'), 2000);
+            return 0;
+          }
+          return prev - 0.1;
+        });
+      }, 100);
+    }
+    return () => clearInterval(timer);
+  }, [gameStatus, gameMode]);
 
   // Game Loop Timer
   useEffect(() => {
@@ -167,11 +279,15 @@ export default function Home() {
       setGameStatus('idle');
       setScore(0);
       setTimeRemaining(15.0);
-      setGlobalTime(30.0);
+      setGlobalTime(5.0);
       setExerciseTime(5.0);
       setGamePoints(0);
       setComboCount(0);
       setFloatingPoints([]);
+      setRecordedVideoUrl(null);
+      setRawVideoBlob(null);
+      setProcessedVideoUrl(null);
+      setIsProcessingVideo(false);
       return;
     }
     
@@ -183,7 +299,7 @@ export default function Home() {
     setFloatingPoints([]);
     
     if (mode === 'score') {
-      setGlobalTime(30.0);
+      setGlobalTime(5.0);
       setExerciseTime(5.0);
       const exercises: Array<'jumping_jacks' | 'squats' | 'high_knees'> = ['jumping_jacks', 'squats', 'high_knees'];
       const randomEx = exercises[Math.floor(Math.random() * exercises.length)];
@@ -299,7 +415,7 @@ export default function Home() {
 
   return (
     <main className="relative flex h-[100dvh] w-full flex-col items-center justify-center bg-gray-900 overflow-hidden touch-none">
-      <Script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" strategy="beforeInteractive" />
+      <Script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" strategy="afterInteractive" />
       
       {/* Overlay Effects */}
       <div className="absolute inset-0 z-10 pointer-events-none">
@@ -317,6 +433,19 @@ export default function Home() {
       <div className="absolute inset-0 z-0">
         <PoseTracker 
           onPoseDetected={handlePoseDetected} 
+          gameStatus={gameStatus}
+          onRecordingComplete={handleRecordingComplete}
+          gamePoints={gamePoints}
+          globalTime={globalTime}
+          gameMode={gameMode}
+          currentExercise={currentExercise}
+          countdownValue={countdown}
+          score={score}
+          targetScore={targetScore}
+          timeRemaining={timeRemaining}
+          exerciseTime={exerciseTime}
+          comboCount={comboCount}
+          floatingPoints={floatingPoints}
         />
       </div>
 
@@ -336,7 +465,11 @@ export default function Home() {
           gamePoints={gamePoints}
           comboCount={comboCount}
           floatingPoints={floatingPoints}
+          recordedVideoUrl={recordedVideoUrl}
+          isProcessingVideo={isProcessingVideo}
           onStart={startGame}
+          onSave={handleSave}
+          onShare={handleShare}
         />
       </div>
     </main>

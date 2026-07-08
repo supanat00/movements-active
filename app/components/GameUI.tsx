@@ -7,7 +7,7 @@ interface GameUIProps {
   maxTime: number;
   score: number;
   targetScore: number;
-  gameStatus: 'idle' | 'countdown' | 'playing' | 'win' | 'lose';
+  gameStatus: 'idle' | 'countdown' | 'playing' | 'win' | 'lose' | 'ending' | 'preview';
   currentExercise: 'jumping_jacks' | 'squats' | 'high_knees';
   countdownValue?: number;
   gameMode?: 'normal' | 'score';
@@ -16,13 +16,18 @@ interface GameUIProps {
   gamePoints?: number;
   comboCount?: number;
   floatingPoints?: {id: number, text: string, type: 'plus'|'minus'|'bonus'}[];
+  recordedVideoUrl?: string | null;
+  isProcessingVideo?: boolean;
   onStart: (mode?: 'normal' | 'score', exercise?: 'jumping_jacks' | 'squats' | 'high_knees') => void;
+  onSave?: () => void;
+  onShare?: () => void;
 }
 
 export default function GameUI({ 
   timeRemaining, maxTime, score, targetScore, gameStatus, currentExercise, countdownValue, 
   gameMode = 'normal', globalTime = 30, exerciseTime = 5, gamePoints = 0, comboCount = 0, floatingPoints = [],
-  onStart 
+  recordedVideoUrl = null, isProcessingVideo = false,
+  onStart, onSave, onShare
 }: GameUIProps) {
   const cleanPercentage = Math.min((score / targetScore) * 100, 100);
 
@@ -32,7 +37,34 @@ export default function GameUI({
     return 'กระโดดตบ';
   };
 
-  const [showPracticeMenu, setShowPracticeMenu] = useState(false);
+  const [showHowToPlay, setShowHowToPlay] = useState(true);
+
+  const VideoResult = () => (
+    <div className="mt-2 mb-6 w-full flex justify-center">
+      {recordedVideoUrl ? (
+        <div className="flex flex-col gap-4 w-full max-w-[280px]">
+          <div className="w-full aspect-[9/16] rounded-2xl shadow-xl border border-gray-600 bg-black overflow-hidden relative">
+            <video 
+              src={recordedVideoUrl} 
+              className="absolute inset-0 w-full h-full object-cover"
+              autoPlay 
+              loop 
+              muted 
+              playsInline
+            />
+          </div>
+          <div className="flex gap-2">
+            <button onClick={onSave} disabled={isProcessingVideo} className="flex-1 flex items-center justify-center gap-2 bg-gray-800 hover:bg-black text-white font-bold py-3 px-2 rounded-xl shadow-md text-sm transition-transform active:scale-95 disabled:opacity-50 disabled:active:scale-100">
+               {isProcessingVideo ? 'รอสักครู่...' : '⬇️ บันทึก'}
+            </button>
+            <button onClick={onShare} disabled={isProcessingVideo} className="flex-1 flex items-center justify-center gap-2 bg-green-500 hover:bg-green-600 text-white font-bold py-3 px-2 rounded-xl shadow-md text-sm transition-transform active:scale-95 disabled:opacity-50 disabled:active:scale-100">
+               {isProcessingVideo ? 'รอสักครู่...' : '📲 แชร์'}
+            </button>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
 
   return (
     <div className="absolute inset-0 w-full h-[100dvh] pointer-events-none flex flex-col justify-between p-4 safe-area-pt overflow-hidden">
@@ -132,52 +164,49 @@ export default function GameUI({
 
       {/* Main Menu Overlay (Centered) */}
       {gameStatus === 'idle' && (
-        <div className="absolute inset-0 z-40 flex flex-col items-center justify-center pointer-events-auto">
-          <div className="w-full max-w-sm flex flex-col gap-5 px-4">
-             {!showPracticeMenu ? (
-               <>
-                 <button 
-                   onClick={() => onStart('score')}
-                   className="w-full bg-gradient-to-r from-yellow-400 to-orange-500 hover:from-yellow-300 hover:to-orange-400 text-white font-black py-5 px-6 rounded-3xl shadow-2xl text-2xl active:scale-95 transition-transform"
-                 >
-                   โหมดเก็บคะแนน
-                 </button>
+        <div 
+          className="absolute inset-0 z-40 flex flex-col items-center justify-center pointer-events-auto bg-cover bg-center"
+          style={{ backgroundImage: 'url(/fitness_bg.png)' }}
+        >
+          
+          {/* Title */}
+          <div className="mt-8 mb-2 text-center animate-in slide-in-from-top-10 fade-in duration-700">
+            <h1 className="text-5xl md:text-6xl font-black text-transparent bg-clip-text bg-gradient-to-br from-yellow-300 via-orange-500 to-red-600 drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)] mb-2 tracking-tighter uppercase">
+              Movement
+            </h1>
+            <h1 className="text-5xl md:text-6xl font-black text-white drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)] mb-3 tracking-tighter uppercase">
+              Active
+            </h1>
+            <div className="inline-block bg-white/20 backdrop-blur-sm px-4 py-1 rounded-full border border-white/30 shadow-lg">
+               <p className="text-yellow-300 font-bold text-sm tracking-widest uppercase drop-shadow-md">AI Fitness Challenge</p>
+            </div>
+          </div>
+          {/* Start Button */}
+          <div className="w-full max-w-[220px] flex flex-col gap-6 px-6 mt-48">
+            <button 
+              onClick={() => onStart('score')}
+              className="relative group w-full bg-gradient-to-r from-cyan-400 to-blue-600 hover:from-cyan-300 hover:to-blue-500 text-white font-black py-3 px-4 rounded-2xl shadow-[0_6px_20px_rgba(6,182,212,0.5)] text-xl active:scale-95 transition-all duration-300 overflow-hidden border-b-4 border-blue-800"
+            >
+              <div className="absolute inset-0 bg-white/20 translate-y-full group-hover:translate-y-0 transition-transform duration-300 ease-out rounded-2xl"></div>
+              <span className="relative z-10 flex items-center justify-center gap-2 drop-shadow-md">
+                เริ่มเกม <span className="text-2xl animate-pulse">⚡</span>
+              </span>
+            </button>
+          </div>
 
-                 <button 
-                   onClick={() => setShowPracticeMenu(true)}
-                   className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-5 px-6 rounded-3xl shadow-2xl text-2xl active:scale-95 transition-transform border border-white/20"
-                 >
-                   โหมดฝึกซ้อม
-                 </button>
-               </>
-             ) : (
-               <>
-                 <div className="bg-black/60 backdrop-blur-sm rounded-xl py-3 mb-2 shadow-lg flex justify-between items-center px-5">
-                   <button onClick={() => setShowPracticeMenu(false)} className="text-white/80 hover:text-white font-bold">
-                     ◀ กลับ
-                   </button>
-                   <h3 className="text-white font-bold text-center flex-1 pr-8">เลือกท่าฝึกซ้อม</h3>
-                 </div>
-                 <button 
-                   onClick={() => { setShowPracticeMenu(false); onStart('normal', 'jumping_jacks'); }}
-                   className="w-full bg-blue-500 hover:bg-blue-400 text-white font-bold py-4 px-6 rounded-2xl shadow-lg text-lg active:scale-95 transition-transform"
-                 >
-                   กระโดดตบ (Jumping Jacks)
-                 </button>
-                 <button 
-                   onClick={() => { setShowPracticeMenu(false); onStart('normal', 'squats'); }}
-                   className="w-full bg-green-500 hover:bg-green-400 text-white font-bold py-4 px-6 rounded-2xl shadow-lg text-lg active:scale-95 transition-transform"
-                 >
-                   สควอท (Squats)
-                 </button>
-                 <button 
-                   onClick={() => { setShowPracticeMenu(false); onStart('normal', 'high_knees'); }}
-                   className="w-full bg-orange-500 hover:bg-orange-400 text-white font-bold py-4 px-6 rounded-2xl shadow-lg text-lg active:scale-95 transition-transform"
-                 >
-                   วิ่งอยู่กับที่ (High Knees)
-                 </button>
-               </>
-             )}
+          {/* Help Button */}
+          {!showHowToPlay && (
+            <button 
+              onClick={() => setShowHowToPlay(true)}
+              className="absolute top-4 left-4 w-10 h-10 bg-black/40 hover:bg-black/60 backdrop-blur-md border-2 border-white/30 rounded-full flex items-center justify-center text-white font-black text-xl shadow-[0_0_10px_rgba(0,0,0,0.5)] active:scale-95 transition-all duration-300 z-50 group"
+            >
+              <span className="group-hover:rotate-12 group-hover:scale-110 transition-transform duration-300">?</span>
+            </button>
+          )}
+          
+          {/* Version Number */}
+          <div className="absolute bottom-4 right-4 text-white/40 text-[10px] font-mono tracking-widest pointer-events-none">
+            v{process.env.NEXT_PUBLIC_COMMIT_HASH || 'dev'}
           </div>
         </div>
       )}
@@ -186,7 +215,7 @@ export default function GameUI({
       <div className="w-full flex flex-col items-center justify-end pb-8 pointer-events-auto">
 
         {gameStatus === 'win' && (
-          <div className="bg-white/95 backdrop-blur-lg w-full max-w-xs p-6 rounded-3xl shadow-2xl text-center border-t-4 border-green-500 animate-in slide-in-from-bottom-10 fade-in duration-500">
+          <div className="bg-white/95 backdrop-blur-lg w-full max-w-sm p-6 rounded-3xl shadow-2xl text-center border-t-4 border-green-500 animate-in slide-in-from-bottom-10 fade-in duration-500 overflow-y-auto max-h-[85vh]">
             {gameMode === 'score' ? (
               <>
                 <div className="w-24 h-24 bg-yellow-100 rounded-full flex items-center justify-center mx-auto mb-4 shadow-inner">
@@ -209,7 +238,6 @@ export default function GameUI({
                 <p className="text-sm font-medium text-gray-600 mb-6">You successfully cleared all the musty smell!</p>
               </>
             )}
-            
             <button 
               onClick={() => onStart()}
               className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 px-6 rounded-2xl shadow-lg text-lg active:scale-95 transition-transform"
@@ -220,12 +248,13 @@ export default function GameUI({
         )}
 
         {gameStatus === 'lose' && (
-          <div className="bg-gray-900/95 backdrop-blur-lg w-full max-w-xs p-6 rounded-3xl shadow-2xl text-center border-t-4 border-red-500 animate-in slide-in-from-bottom-10 fade-in duration-500">
+          <div className="bg-gray-900/95 backdrop-blur-lg w-full max-w-sm p-6 rounded-3xl shadow-2xl text-center border-t-4 border-red-500 animate-in slide-in-from-bottom-10 fade-in duration-500">
              <div className="w-16 h-16 bg-red-900/50 rounded-full flex items-center justify-center mx-auto mb-3">
               <span className="text-3xl">💨</span>
             </div>
             <h2 className="text-3xl font-black text-red-500 mb-2">GAME OVER</h2>
             <p className="text-sm font-medium text-gray-300 mb-6">The musty smell took over.</p>
+
             <button 
               onClick={() => onStart()}
               className="w-full bg-gray-100 hover:bg-white text-gray-900 font-bold py-4 px-6 rounded-2xl shadow-lg text-lg active:scale-95 transition-transform"
@@ -235,6 +264,69 @@ export default function GameUI({
           </div>
         )}
       </div>
+
+      {/* Ending Overlay */}
+      {gameStatus === 'ending' && (
+        <div className="absolute inset-0 z-40 flex flex-col items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in zoom-in duration-300">
+          <div className="text-[120px] mb-4 animate-[bounce_1s_ease-in-out_infinite] drop-shadow-[0_0_30px_rgba(255,255,0,0.8)]">🏆</div>
+          <div className="text-6xl font-black text-yellow-400 drop-shadow-[0_5px_5px_rgba(0,0,0,1)] tracking-widest">SCORE: {gamePoints}</div>
+        </div>
+      )}
+
+      {/* Preview Full Screen */}
+      {gameStatus === 'preview' && (
+        <div className="absolute inset-0 z-50 bg-gray-900 flex flex-col pointer-events-auto animate-in fade-in duration-500">
+           <div className="flex-1 flex flex-col items-center justify-center p-6 w-full max-w-lg mx-auto">
+              <h2 className="text-3xl md:text-4xl font-black text-white mb-6 uppercase tracking-wider drop-shadow-md">Video Preview</h2>
+              <VideoResult />
+              {!isProcessingVideo && (
+                <button 
+                  onClick={() => onStart()}
+                  className="w-full mt-4 bg-gradient-to-r from-blue-600 to-cyan-500 hover:from-blue-500 hover:to-cyan-400 text-white font-bold py-4 px-6 rounded-2xl shadow-lg text-lg active:scale-95 transition-all duration-300 border-b-4 border-blue-800"
+                >
+                  เล่นอีกครั้ง
+                </button>
+              )}
+           </div>
+        </div>
+      )}
+
+      {/* How to Play Modal */}
+      {showHowToPlay && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm pointer-events-auto p-4">
+          <div className="bg-white w-full max-w-md rounded-3xl p-6 shadow-2xl relative animate-in zoom-in-95 duration-300">
+            <button 
+              onClick={() => setShowHowToPlay(false)}
+              className="absolute top-4 right-4 w-8 h-8 flex items-center justify-center bg-gray-100 hover:bg-gray-200 text-gray-600 rounded-full font-bold active:scale-95 transition-transform"
+            >
+              ✕
+            </button>
+            <h2 className="text-2xl font-black text-center text-gray-800 mb-6 uppercase">
+              วิธีการเล่น
+            </h2>
+            <div className="space-y-4 text-gray-600">
+              <div className="bg-blue-50 p-4 rounded-2xl">
+                <h3 className="font-bold text-blue-800 mb-1">🎮 โหมดเก็บคะแนน</h3>
+                <p className="text-sm">ทำท่าออกกำลังกายให้ถูกต้องเพื่อสะสมคะแนนภายในเวลาที่กำหนด</p>
+              </div>
+              <div className="bg-green-50 p-4 rounded-2xl">
+                <h3 className="font-bold text-green-800 mb-1">🏋️ โหมดฝึกซ้อม</h3>
+                <p className="text-sm">ฝึกท่าออกกำลังกายทีละท่าเพื่อให้ AI ตรวจจับท่าทางได้อย่างแม่นยำ</p>
+              </div>
+              <div className="bg-yellow-50 p-4 rounded-2xl">
+                <h3 className="font-bold text-yellow-800 mb-1">📸 การตั้งกล้อง</h3>
+                <p className="text-sm">วางอุปกรณ์ให้เห็นเต็มตัว ตั้งแต่ศีรษะจนถึงเท้า และอยู่ในที่ที่มีแสงสว่างเพียงพอ</p>
+              </div>
+            </div>
+            <button 
+              onClick={() => setShowHowToPlay(false)}
+              className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 px-6 rounded-2xl shadow-lg text-lg active:scale-95 transition-transform mt-6"
+            >
+              เข้าใจแล้ว เริ่มเลย!
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -7,7 +7,7 @@ interface VFXOverlayProps {
   maxTime: number;
   score: number;
   targetScore: number;
-  gameStatus: 'idle' | 'countdown' | 'playing' | 'win' | 'lose';
+  gameStatus: 'idle' | 'countdown' | 'playing' | 'win' | 'lose' | 'ending' | 'preview';
   currentLandmarks?: React.MutableRefObject<any>;
 }
 
