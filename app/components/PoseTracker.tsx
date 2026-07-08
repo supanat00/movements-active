@@ -311,9 +311,7 @@ export default function PoseTracker({
              const exName = getExName(currentExercise);
              ctx.font = 'bold 43px sans-serif';
              const exWText = ctx.measureText(exName).width;
-             ctx.font = '900 43px sans-serif';
-             const scWText = ctx.measureText(`${score} / ${targetScore}`).width;
-             const totalBoxW = exWText + 28 + scWText + 114;
+             const totalBoxW = exWText + 114;
              const baseY = 1280 - (gameMode === 'score' ? 240 : 150);
              
              drawRoundRect(720/2 - totalBoxW/2 + 5, baseY + 10, totalBoxW, 90, 45, 'rgba(0,0,0,0.4)'); // fake shadow
@@ -323,10 +321,6 @@ export default function PoseTracker({
              ctx.fillStyle = '#ffffff';
              ctx.font = 'bold 43px sans-serif';
              ctx.fillText(exName, 720/2 - totalBoxW/2 + 57, baseY + 62);
-             
-             ctx.fillStyle = '#4ade80';
-             ctx.font = '900 43px sans-serif';
-             ctx.fillText(`${score} / ${targetScore}`, 720/2 - totalBoxW/2 + 57 + exWText + 28, baseY + 62);
 
              if (gameMode === 'score') {
                const timeY = baseY + 118;
@@ -335,8 +329,16 @@ export default function PoseTracker({
                
                // Bar
                drawRoundRect(720/2 - 200, timeY + 24, 250, 22, 11, '#1f2937');
-               const exW = Math.max(0, 250 * ((exerciseTime || 0) / 5));
-               ctx.fillStyle = (exerciseTime || 0) < 2 ? '#ef4444' : '#fb923c';
+               
+               const currentMaxTime = (gamePoints || 0) >= 30 ? 3 : (gamePoints || 0) >= 15 ? 4 : 5;
+               const exW = Math.max(0, 250 * ((exerciseTime || 0) / currentMaxTime));
+               
+               let barColor = '#fb923c';
+               if ((exerciseTime || 0) < 2) {
+                 barColor = (Math.floor(Date.now() / 150) % 2 === 0) ? '#ef4444' : '#ffbaba';
+               }
+               ctx.fillStyle = barColor;
+               
                if (exW > 0) {
                  ctx.beginPath();
                  ctx.roundRect(720/2 - 200, timeY + 24, exW, 22, 11);
@@ -345,7 +347,7 @@ export default function PoseTracker({
                ctx.fillStyle = '#ffffff';
                ctx.font = '900 36px sans-serif';
                ctx.textAlign = 'right';
-               ctx.fillText(`${(exerciseTime || 0).toFixed(1)}s`, 720/2 + 200, timeY + 48);
+               ctx.fillText(`${Math.ceil(exerciseTime || 0)}s`, 720/2 + 200, timeY + 48);
              }
              
              // Floating Points

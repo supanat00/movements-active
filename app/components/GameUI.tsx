@@ -176,7 +176,7 @@ export default function GameUI({
               onClick={() => onStart()}
               className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 px-6 rounded-2xl shadow-lg text-lg active:scale-95 transition-transform"
             >
-              กลับไปหน้าเลือกโหมด
+              กลับหน้าหลัก
             </button>
           </div>
         )}
@@ -193,7 +193,7 @@ export default function GameUI({
               onClick={() => onStart()}
               className="w-full bg-gray-100 hover:bg-white text-gray-900 font-bold py-4 px-6 rounded-2xl shadow-lg text-lg active:scale-95 transition-transform"
             >
-              กลับไปหน้าเลือกโหมด
+              กลับหน้าหลัก
             </button>
           </div>
         )}
@@ -233,17 +233,21 @@ export default function GameUI({
               วิธีการเล่น
             </h2>
             <div className="space-y-4 text-gray-600">
+              <div className="bg-yellow-50 p-4 rounded-2xl">
+                <h3 className="font-bold text-yellow-800 mb-1">📸 1. การเตรียมตัว</h3>
+                <p className="text-sm">วางกล้องให้เห็นเต็มตัว และเว้นระยะห่างให้พอดี AI จะคอยจับการเคลื่อนไหวของคุณ</p>
+              </div>
               <div className="bg-blue-50 p-4 rounded-2xl">
-                <h3 className="font-bold text-blue-800 mb-1">🎮 โหมดเก็บคะแนน</h3>
-                <p className="text-sm">ทำท่าออกกำลังกายให้ถูกต้องเพื่อสะสมคะแนนภายในเวลาที่กำหนด</p>
+                <h3 className="font-bold text-blue-800 mb-1">🏃‍♂️ 2. แข่งกับเวลา</h3>
+                <p className="text-sm">ระบบจะสุ่มท่าให้ทำทีละ 1 ท่า โดยมีเวลาจำกัดเพียง <strong>5 วินาที</strong> ยิ่งคะแนนเยอะเวลาจะยิ่งน้อยลงเรื่อยๆ!</p>
               </div>
               <div className="bg-green-50 p-4 rounded-2xl">
-                <h3 className="font-bold text-green-800 mb-1">🏋️ โหมดฝึกซ้อม</h3>
-                <p className="text-sm">ฝึกท่าออกกำลังกายทีละท่าเพื่อให้ AI ตรวจจับท่าทางได้อย่างแม่นยำ</p>
-              </div>
-              <div className="bg-yellow-50 p-4 rounded-2xl">
-                <h3 className="font-bold text-yellow-800 mb-1">📸 การตั้งกล้อง</h3>
-                <p className="text-sm">วางอุปกรณ์ให้เห็นเต็มตัว ตั้งแต่ศีรษะจนถึงเท้า และอยู่ในที่ที่มีแสงสว่างเพียงพอ</p>
+                <h3 className="font-bold text-green-800 mb-1">⚡ 3. โบนัสพิเศษ</h3>
+                <ul className="text-sm list-disc list-inside space-y-1">
+                  <li><strong>Perfect:</strong> ทำท่าเสร็จใน 2 วิแรก ได้คะแนน +2</li>
+                  <li><strong>Combo x3:</strong> ทำสำเร็จ 3 ท่าติด ได้โบนัสคะแนน</li>
+                  <li><strong>Combo x5:</strong> ทำสำเร็จ 5 ท่าติด ได้เวลาเพิ่ม +5 วินาที</li>
+                </ul>
               </div>
             </div>
             <button 

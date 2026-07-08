@@ -71,16 +71,7 @@ export default function Home() {
   const [timeRemaining, setTimeRemaining] = useState(15.0);
   const [score, setScore] = useState(0);
   const [countdown, setCountdown] = useState(3);
-  const getTargetScore = (mode: 'normal' | 'score', ex: string) => {
-    if (mode === 'score') {
-      if (ex === 'jumping_jacks') return 3;
-      if (ex === 'squats') return 2;
-      return 5;
-    } else {
-      return ex === 'squats' ? 5 : 10;
-    }
-  };
-  const targetScore = getTargetScore(gameMode, currentExercise);
+  const targetScore = gameMode === 'score' ? 1 : (currentExercise === 'squats' ? 5 : 10);
   const maxTime = gameMode === 'score' ? 30.0 : 15.0;
 
   const currentLandmarks = useRef<any>(null);
@@ -185,12 +176,17 @@ export default function Home() {
     }
   };
 
-  const nextRandomExercise = useCallback(() => {
+  const nextRandomExercise = useCallback((currentScore: number = 0) => {
     const exercises: Array<'jumping_jacks' | 'squats' | 'high_knees'> = ['jumping_jacks', 'squats', 'high_knees'];
     const randomExercise = exercises[Math.floor(Math.random() * exercises.length)];
     setCurrentExercise(randomExercise);
     setScore(0);
-    setExerciseTime(5.0);
+
+    let newExerciseTime = 5.0;
+    if (currentScore >= 30) newExerciseTime = 3.0;
+    else if (currentScore >= 15) newExerciseTime = 4.0;
+    
+    setExerciseTime(newExerciseTime);
     poseState.current.isJumping = false;
     poseState.current.isSquatting = false;
     poseState.current.lastKneeLifted = null;
@@ -245,24 +241,39 @@ export default function Home() {
         let pointType: 'plus' | 'bonus' = 'plus';
         let pointText = '+1';
         
-        if (newCombo % 3 === 0) {
-          pointsGained = 2;
-          pointType = 'bonus';
-          pointText = '+2 Bonus!';
+        const currentMaxTime = gamePoints >= 30 ? 3.0 : gamePoints >= 15 ? 4.0 : 5.0;
+        const timeSpent = currentMaxTime - exerciseTime;
+        
+        if (timeSpent <= 2.0) {
+           pointText = 'PERFECT! ⚡';
+           pointType = 'bonus';
+           pointsGained += 1;
         }
         
-        setGamePoints(prev => prev + pointsGained);
+        if (newCombo % 3 === 0) {
+          pointsGained += 2;
+          pointType = 'bonus';
+          pointText = pointText === '+1' ? '🔥 COMBO x3!' : 'PERFECT + COMBO!';
+        }
+        
+        if (newCombo % 5 === 0) {
+          setGlobalTime(prev => prev + 5);
+          addFloatingPoint('TIME EXTENDED!', 'plus');
+        }
+        
+        const nextScore = gamePoints + pointsGained;
+        setGamePoints(nextScore);
         addFloatingPoint(pointText, pointType);
         playScoreSound();
-        nextRandomExercise();
+        nextRandomExercise(nextScore);
       } else if (exerciseTime <= 0) {
         setComboCount(0);
         setGamePoints(prev => Math.max(0, prev - 1));
-        addFloatingPoint('-1', 'minus');
-        nextRandomExercise();
+        addFloatingPoint('MISS!', 'minus');
+        nextRandomExercise(gamePoints);
       }
     }
-  }, [score, targetScore, gameStatus, timeRemaining, gameMode, globalTime, exerciseTime, comboCount, addFloatingPoint, nextRandomExercise]);
+  }, [score, targetScore, gameStatus, timeRemaining, gameMode, globalTime, exerciseTime, comboCount, addFloatingPoint, nextRandomExercise, gamePoints]);
 
   useEffect(() => {
     if (gameStatus === 'countdown') {
@@ -290,7 +301,7 @@ export default function Home() {
       setGameStatus('idle');
       setScore(0);
       setTimeRemaining(15.0);
-      setGlobalTime(5.0);
+      setGlobalTime(60.0);
       setExerciseTime(5.0);
       setGamePoints(0);
       setComboCount(0);
@@ -310,7 +321,7 @@ export default function Home() {
     setFloatingPoints([]);
     
     if (mode === 'score') {
-      setGlobalTime(5.0);
+      setGlobalTime(30.0);
       setExerciseTime(5.0);
       const exercises: Array<'jumping_jacks' | 'squats' | 'high_knees'> = ['jumping_jacks', 'squats', 'high_knees'];
       const randomEx = exercises[Math.floor(Math.random() * exercises.length)];
