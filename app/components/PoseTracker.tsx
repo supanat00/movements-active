@@ -266,7 +266,7 @@ export default function PoseTracker({
                ctx.fillText('TIME LEFT', 720 - 130, 75);
                ctx.fillStyle = '#dc2626';
                ctx.font = '900 65px sans-serif';
-               ctx.fillText(`${(globalTime || 0).toFixed(1)}s`, 720 - 130, 140);
+               ctx.fillText(`${Math.ceil(globalTime || 0)}s`, 720 - 130, 140);
              } else {
                // Top Center Time (Normal)
                drawRoundRect(720/2 - 120 + 5, 40 + 10, 240, 90, 45, 'rgba(0,0,0,0.15)'); // fake shadow
@@ -274,7 +274,7 @@ export default function PoseTracker({
                ctx.fillStyle = '#dc2626';
                ctx.font = '900 54px sans-serif';
                ctx.textAlign = 'center';
-               ctx.fillText(`${(timeRemaining || 0).toFixed(1)}s`, 720/2, 105);
+               ctx.fillText(`${Math.ceil(timeRemaining || 0)}s`, 720/2, 105);
              }
 
              // Clean Meter

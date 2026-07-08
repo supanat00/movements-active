@@ -368,9 +368,11 @@ export default function Home() {
 
     const state = poseState.current;
     const now = Date.now();
+    
+    const isVisible = (...lms: any[]) => lms.every(lm => lm && lm.visibility > 0.65);
 
     if (currentExercise === 'jumping_jacks') {
-      if (!rightElbow || !rightShoulder || !rightHip || !leftElbow || !leftShoulder || !leftHip) return;
+      if (!isVisible(rightElbow, rightShoulder, rightHip, leftElbow, leftShoulder, leftHip)) return;
       const rightTheta = calculateAngle(rightElbow, rightShoulder, rightHip);
       const leftTheta = calculateAngle(leftElbow, leftShoulder, leftHip);
       const theta = Math.max(rightTheta, leftTheta);
@@ -386,7 +388,7 @@ export default function Home() {
       }
     } 
     else if (currentExercise === 'squats') {
-      if (!rightHip || !rightKnee || !rightAnkle || !leftHip || !leftKnee || !leftAnkle) return;
+      if (!isVisible(rightHip, rightKnee, rightAnkle, leftHip, leftKnee, leftAnkle)) return;
       const rightKneeAngle = calculateAngle(rightHip, rightKnee, rightAnkle);
       const leftKneeAngle = calculateAngle(leftHip, leftKnee, leftAnkle);
       // Both knees must be bent, so we check the LEAST bent knee (max angle)
@@ -406,7 +408,7 @@ export default function Home() {
       }
     }
     else if (currentExercise === 'high_knees') {
-      if (!rightHip || !rightKnee || !leftHip || !leftKnee || !rightAnkle || !leftAnkle) return;
+      if (!isVisible(rightHip, rightKnee, leftHip, leftKnee, rightAnkle, leftAnkle)) return;
       
       // Calculate leg length to make the threshold dynamic based on user's distance from camera
       const rightLegLength = rightAnkle.y - rightHip.y;

@@ -51,7 +51,7 @@ export default function GameUI({
     };
 
     return (
-      <div className="mt-2 mb-6 w-full flex justify-center">
+      <div className="mt-2 mb-0 w-full flex justify-center">
         {recordedVideoUrl ? (
           <div className="flex flex-col gap-4 w-full max-w-[280px]">
             <div className="w-full aspect-[9/16] rounded-2xl shadow-xl border border-gray-600 bg-black overflow-hidden relative group">
@@ -205,12 +205,11 @@ export default function GameUI({
       {gameStatus === 'preview' && (
         <div className="absolute inset-0 z-50 bg-gray-900 flex flex-col pointer-events-auto animate-in fade-in duration-500">
            <div className="flex-1 flex flex-col items-center justify-center p-6 w-full max-w-lg mx-auto">
-              <h2 className="text-3xl md:text-4xl font-black text-white mb-6 uppercase tracking-wider drop-shadow-md">Video Preview</h2>
               <VideoResult />
               {!isProcessingVideo && (
                 <button 
                   onClick={() => onStart()}
-                  className="w-full mt-4 bg-gradient-to-r from-blue-600 to-cyan-500 hover:from-blue-500 hover:to-cyan-400 text-white font-bold py-4 px-6 rounded-2xl shadow-lg text-lg active:scale-95 transition-all duration-300 border-b-4 border-blue-800"
+                  className="w-full max-w-[280px] mt-4 bg-gradient-to-r from-blue-600 to-cyan-500 hover:from-blue-500 hover:to-cyan-400 text-white font-bold py-2 px-4 rounded-xl shadow-md text-sm active:scale-95 transition-all duration-300 border-b-2 border-blue-800"
                 >
                   เล่นอีกครั้ง
                 </button>
