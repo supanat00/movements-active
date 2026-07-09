@@ -65,7 +65,7 @@ export default function Home() {
   const [recordedVideoUrl, setRecordedVideoUrl] = useState<string | null>(null);
   const [isProcessingVideo, setIsProcessingVideo] = useState(false);
   const [rawVideoBlob, setRawVideoBlob] = useState<Blob | null>(null);
-  const [processedVideoUrl, setProcessedVideoUrl] = useState<string | null>(null);
+  const [processedVideoUrls, setProcessedVideoUrls] = useState<Record<string, string>>({});
   const ffmpegRef = useRef<FFmpeg | null>(null);
 
   const [timeRemaining, setTimeRemaining] = useState(15.0);
@@ -107,16 +107,12 @@ export default function Home() {
     console.log("Recording complete! Type:", blob.type);
     setRawVideoBlob(blob);
     setRecordedVideoUrl(URL.createObjectURL(blob));
-    setProcessedVideoUrl(null);
+    setProcessedVideoUrls({});
   };
 
-  const processVideoToMp4 = async (): Promise<string | null> => {
-    if (processedVideoUrl) return processedVideoUrl;
+  const processVideoToMp4 = async (resolution: '360p' | '720p'): Promise<string | null> => {
+    if (processedVideoUrls[resolution]) return processedVideoUrls[resolution]!;
     if (!rawVideoBlob) return null;
-    
-    if (rawVideoBlob.type.includes('mp4')) {
-      return recordedVideoUrl;
-    }
 
     setIsProcessingVideo(true);
     try {
@@ -125,18 +121,27 @@ export default function Home() {
       if (!ffmpeg.loaded) await loadFfmpeg();
 
       await ffmpeg.writeFile("input.webm", await fetchFile(rawVideoBlob));
-      await ffmpeg.exec([
+      
+      const args = [
         "-i", "input.webm", 
         "-c:v", "libx264",
         "-preset", "ultrafast", 
         "-crf", "22",
-        "-r", "60",
-        "output.mp4"
-      ]);
+        "-r", "60"
+      ];
+      
+      if (resolution === '360p') {
+          args.push("-vf", "scale=360:640");
+      }
+      
+      args.push("output.mp4");
+
+      await ffmpeg.exec(args);
       
       const data = await ffmpeg.readFile("output.mp4") as any;
       const url = URL.createObjectURL(new Blob([data.buffer], { type: "video/mp4" }));
-      setProcessedVideoUrl(url);
+      
+      setProcessedVideoUrls(prev => ({ ...prev, [resolution]: url }));
       return url;
     } catch (err) {
       console.error("FFmpeg processing error:", err);
@@ -146,18 +151,18 @@ export default function Home() {
     }
   };
 
-  const handleSave = async () => {
-    const url = await processVideoToMp4();
+  const handleSave = async (resolution: '360p' | '720p') => {
+    const url = await processVideoToMp4(resolution);
     if (url) {
       const a = document.createElement('a');
       a.href = url;
-      a.download = 'active-movement.mp4';
+      a.download = `active-movement-${resolution}.mp4`;
       a.click();
     }
   };
 
   const handleShare = async () => {
-    const url = await processVideoToMp4();
+    const url = await processVideoToMp4('720p');
     if (navigator.share && url) {
       try {
         const response = await fetch(url);
@@ -308,7 +313,7 @@ export default function Home() {
       setFloatingPoints([]);
       setRecordedVideoUrl(null);
       setRawVideoBlob(null);
-      setProcessedVideoUrl(null);
+      setProcessedVideoUrls({});
       setIsProcessingVideo(false);
       return;
     }

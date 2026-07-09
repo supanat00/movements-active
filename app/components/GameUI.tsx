@@ -19,7 +19,7 @@ interface GameUIProps {
   recordedVideoUrl?: string | null;
   isProcessingVideo?: boolean;
   onStart: (mode?: 'normal' | 'score', exercise?: 'jumping_jacks' | 'squats' | 'high_knees') => void;
-  onSave?: () => void;
+  onSave?: (resolution: '360p' | '720p') => void;
   onShare?: () => void;
 }
 
@@ -76,10 +76,13 @@ export default function GameUI({
               </button>
             </div>
           <div className="flex gap-2">
-            <button onClick={onSave} disabled={isProcessingVideo} className="flex-1 flex items-center justify-center gap-2 bg-gray-800 hover:bg-black text-white font-bold py-3 px-2 rounded-xl shadow-md text-sm transition-transform active:scale-95 disabled:opacity-50 disabled:active:scale-100">
-               {isProcessingVideo ? 'รอสักครู่...' : '⬇️ บันทึก'}
+            <button onClick={() => onSave?.('360p')} disabled={isProcessingVideo} className="flex-1 flex items-center justify-center gap-1 bg-gray-800 hover:bg-black text-white font-bold py-3 px-1 rounded-xl shadow-md text-sm transition-transform active:scale-95 disabled:opacity-50 disabled:active:scale-100">
+               {isProcessingVideo ? 'รอสักครู่...' : '⬇️ 360p'}
             </button>
-            <button onClick={onShare} disabled={isProcessingVideo} className="flex-1 flex items-center justify-center gap-2 bg-green-500 hover:bg-green-600 text-white font-bold py-3 px-2 rounded-xl shadow-md text-sm transition-transform active:scale-95 disabled:opacity-50 disabled:active:scale-100">
+            <button onClick={() => onSave?.('720p')} disabled={isProcessingVideo} className="flex-1 flex items-center justify-center gap-1 bg-gray-800 hover:bg-black text-white font-bold py-3 px-1 rounded-xl shadow-md text-sm transition-transform active:scale-95 disabled:opacity-50 disabled:active:scale-100">
+               {isProcessingVideo ? 'รอสักครู่...' : '⬇️ 720p'}
+            </button>
+            <button onClick={onShare} disabled={isProcessingVideo} className="flex-1 flex items-center justify-center gap-1 bg-green-500 hover:bg-green-600 text-white font-bold py-3 px-1 rounded-xl shadow-md text-sm transition-transform active:scale-95 disabled:opacity-50 disabled:active:scale-100">
                {isProcessingVideo ? 'รอสักครู่...' : '📲 แชร์'}
             </button>
           </div>
