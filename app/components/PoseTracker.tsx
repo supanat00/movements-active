@@ -167,6 +167,7 @@ export default function PoseTracker({
     let animationFrameId: number;
     let isStreamActive = true;
     let isProcessingPose = false;
+    let lastPoseTime = 0;
 
     // Native Camera System for HD/FullHD
     const startCamera = async () => {
@@ -395,8 +396,10 @@ export default function PoseTracker({
       }
 
       // 2. Process pose estimation without blocking the canvas rendering loop
-      if (!isProcessingPose) {
+      const now = performance.now();
+      if (!isProcessingPose && (now - lastPoseTime > 33)) { // Limit to ~30 FPS
         isProcessingPose = true;
+        lastPoseTime = now;
         pose.send({ image: videoRef.current }).catch(console.error).finally(() => {
           isProcessingPose = false;
         });

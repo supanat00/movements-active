@@ -226,13 +226,19 @@ export default function Home() {
   // 1. Single Timer loop for ALL time decrement
   useEffect(() => {
     let timer: NodeJS.Timeout;
+    let lastTime = performance.now();
+    
     if (gameStatus === 'playing') {
       timer = setInterval(() => {
+        const now = performance.now();
+        const dt = (now - lastTime) / 1000;
+        lastTime = now;
+        
         if (gameMode === 'normal') {
-          setTimeRemaining((prev) => Math.max(0, prev - 0.1));
+          setTimeRemaining((prev) => Math.max(0, prev - dt));
         } else if (gameMode === 'score') {
-          setGlobalTime((prev) => Math.max(0, prev - 0.1));
-          setExerciseTime((prev) => Math.max(0, prev - 0.1));
+          setGlobalTime((prev) => Math.max(0, prev - dt));
+          setExerciseTime((prev) => Math.max(0, prev - dt));
         }
       }, 100);
     }
