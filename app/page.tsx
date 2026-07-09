@@ -101,6 +101,22 @@ export default function Home() {
   useEffect(() => {
     // Preload ffmpeg on mount
     loadFfmpeg().catch(console.error);
+
+    // Preload assets to prevent flashing
+    if (typeof window !== "undefined") {
+      const preloadImages = ['/fitness_bg.png', '/mist.png'];
+      preloadImages.forEach(src => {
+        const img = new Image();
+        img.src = src;
+      });
+
+      const preloadAudio = ['/sound/jump.mp3', '/sound/squat.mp3', '/sound/run.mp3', '/sound/score.mp3'];
+      preloadAudio.forEach(src => {
+        const audio = new Audio();
+        audio.src = src;
+        audio.preload = 'auto';
+      });
+    }
   }, []);
 
   const handleRecordingComplete = (blob: Blob) => {
