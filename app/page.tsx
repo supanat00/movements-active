@@ -61,6 +61,9 @@ export default function Home() {
   const [gamePoints, setGamePoints] = useState(0);
   const [comboCount, setComboCount] = useState(0);
   const [floatingPoints, setFloatingPoints] = useState<{id: number, text: string, type: 'plus'|'minus'|'bonus'}[]>([]);
+  const [removeBackground, setRemoveBackground] = useState(false);
+  const [bgType, setBgType] = useState<'neon-grid' | 'synthwave' | 'video'>('neon-grid');
+  const [bgVideoUrl, setBgVideoUrl] = useState<string | null>(null);
 
   const [recordedVideoUrl, setRecordedVideoUrl] = useState<string | null>(null);
   const [isProcessingVideo, setIsProcessingVideo] = useState(false);
@@ -507,6 +510,9 @@ export default function Home() {
             exerciseTime={exerciseTime}
             comboCount={comboCount}
             floatingPoints={floatingPoints}
+            removeBackground={removeBackground}
+            bgType={bgType}
+            bgVideoUrl={bgVideoUrl}
           />
         </div>
 
@@ -528,6 +534,12 @@ export default function Home() {
             floatingPoints={floatingPoints}
             recordedVideoUrl={recordedVideoUrl}
             isProcessingVideo={isProcessingVideo}
+            removeBackground={removeBackground}
+            bgType={bgType}
+            bgVideoUrl={bgVideoUrl}
+            setRemoveBackground={setRemoveBackground}
+            setBgType={setBgType}
+            setBgVideoUrl={setBgVideoUrl}
             onStart={startGame}
             onSave={handleSave}
             onShare={handleShare}

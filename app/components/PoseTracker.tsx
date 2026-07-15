@@ -17,22 +17,29 @@ interface PoseTrackerProps {
   exerciseTime?: number;
   comboCount?: number;
   floatingPoints?: { id: number, text: string, type: 'plus' | 'minus' | 'bonus' }[];
+  removeBackground?: boolean;
+  bgType?: 'neon-grid' | 'synthwave' | 'video';
+  bgVideoUrl?: string | null;
 }
 
 export default function PoseTracker({
   onPoseDetected, gameStatus, onRecordingComplete,
   gamePoints = 0, globalTime = 0, gameMode = 'normal', currentExercise = '', countdownValue = 3,
-  score = 0, targetScore = 1, timeRemaining = 0, exerciseTime = 0, comboCount = 0, floatingPoints = []
+  score = 0, targetScore = 1, timeRemaining = 0, exerciseTime = 0, comboCount = 0, floatingPoints = [],
+  removeBackground = false, bgType = 'neon-grid', bgVideoUrl = null
 }: PoseTrackerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const bgVideoRef = useRef<HTMLVideoElement>(null);
+  const offscreenCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const latestResultsRef = useRef<any>(null);
   const cameraRef = useRef<any>(null);
   const [isReady, setIsReady] = useState(false);
 
   // Store the latest callback in a ref to avoid re-triggering the camera setup when state changes
   const onPoseDetectedRef = useRef(onPoseDetected);
   const onRecordingCompleteRef = useRef(onRecordingComplete);
-  const uiStateRef = useRef({ gamePoints, globalTime, gameMode, currentExercise, gameStatus, countdownValue, score, targetScore, timeRemaining, exerciseTime, comboCount, floatingPoints });
+  const uiStateRef = useRef({ gamePoints, globalTime, gameMode, currentExercise, gameStatus, countdownValue, score, targetScore, timeRemaining, exerciseTime, comboCount, floatingPoints, removeBackground, bgType, bgVideoUrl });
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
@@ -40,8 +47,8 @@ export default function PoseTracker({
   useEffect(() => {
     onPoseDetectedRef.current = onPoseDetected;
     onRecordingCompleteRef.current = onRecordingComplete;
-    uiStateRef.current = { gamePoints, globalTime, gameMode, currentExercise, gameStatus, countdownValue, score, targetScore, timeRemaining, exerciseTime, comboCount, floatingPoints };
-  }, [onPoseDetected, onRecordingComplete, gamePoints, globalTime, gameMode, currentExercise, gameStatus, countdownValue, score, targetScore, timeRemaining, exerciseTime, comboCount, floatingPoints]);
+    uiStateRef.current = { gamePoints, globalTime, gameMode, currentExercise, gameStatus, countdownValue, score, targetScore, timeRemaining, exerciseTime, comboCount, floatingPoints, removeBackground, bgType, bgVideoUrl };
+  }, [onPoseDetected, onRecordingComplete, gamePoints, globalTime, gameMode, currentExercise, gameStatus, countdownValue, score, targetScore, timeRemaining, exerciseTime, comboCount, floatingPoints, removeBackground, bgType, bgVideoUrl]);
 
   // MediaRecorder logic based on gameStatus
   useEffect(() => {
@@ -104,6 +111,17 @@ export default function PoseTracker({
     }
   }, [gameStatus]);
 
+  // Synchronize background video playback
+  useEffect(() => {
+    if (removeBackground && bgType === 'video' && bgVideoRef.current) {
+      if (gameStatus === 'playing' || gameStatus === 'countdown') {
+        bgVideoRef.current.play().catch((e) => console.log('Background video play failed:', e));
+      } else {
+        bgVideoRef.current.pause();
+      }
+    }
+  }, [gameStatus, removeBackground, bgType, bgVideoUrl]);
+
   useEffect(() => {
     // Check if mediapipe is loaded from CDN
     const checkMediaPipe = setInterval(() => {
@@ -128,13 +146,14 @@ export default function PoseTracker({
     pose.setOptions({
       modelComplexity: 0, // 0=light (best for mobile/web AR), 1=full, 2=heavy
       smoothLandmarks: true,
-      enableSegmentation: false,
-      smoothSegmentation: false,
+      enableSegmentation: true,
+      smoothSegmentation: true,
       minDetectionConfidence: 0.5,
       minTrackingConfidence: 0.5,
     });
 
     pose.onResults((results: any) => {
+      latestResultsRef.current = results;
       if (results.poseLandmarks && videoRef.current) {
         const vW = videoRef.current.videoWidth;
         const vH = videoRef.current.videoHeight;
@@ -213,15 +232,64 @@ export default function PoseTracker({
           const offsetX = (TARGET_W - drawW) / 2;
           const offsetY = (TARGET_H - drawH) / 2;
 
-          // Draw video frame (object-cover crop)
-          ctx.save();
-          ctx.translate(canvasRef.current.width, 0); // Mirror horizontally
-          ctx.scale(-1, 1);
-          ctx.drawImage(videoRef.current, offsetX, offsetY, drawW, drawH);
-          ctx.restore();
-
           // Get current UI states
-          const { gamePoints, globalTime, gameStatus: status, countdownValue, score, targetScore, timeRemaining, exerciseTime, comboCount, gameMode, currentExercise, floatingPoints } = uiStateRef.current;
+          const { gamePoints, globalTime, gameStatus: status, countdownValue, score, targetScore, timeRemaining, exerciseTime, comboCount, gameMode, currentExercise, floatingPoints, removeBackground, bgType } = uiStateRef.current;
+
+          // 1. Draw Background
+          if (removeBackground) {
+            if (bgType === 'video' && bgVideoRef.current && bgVideoRef.current.readyState >= 2) {
+              const bgVW = bgVideoRef.current.videoWidth;
+              const bgVH = bgVideoRef.current.videoHeight;
+              const bgScale = Math.max(TARGET_W / bgVW, TARGET_H / bgVH);
+              const bgDrawW = bgVW * bgScale;
+              const bgDrawH = bgVH * bgScale;
+              const bgOffsetX = (TARGET_W - bgDrawW) / 2;
+              const bgOffsetY = (TARGET_H - bgDrawH) / 2;
+              ctx.drawImage(bgVideoRef.current, bgOffsetX, bgOffsetY, bgDrawW, bgDrawH);
+            } else if (bgType === 'synthwave') {
+              drawSynthwaveBg(ctx, TARGET_W, TARGET_H);
+            } else {
+              drawNeonGridBg(ctx, TARGET_W, TARGET_H);
+            }
+          } else {
+            // Draw camera full frame if not removing background
+            ctx.save();
+            ctx.translate(TARGET_W, 0); // Mirror horizontally
+            ctx.scale(-1, 1);
+            ctx.drawImage(videoRef.current, offsetX, offsetY, drawW, drawH);
+            ctx.restore();
+          }
+
+          // 2. Draw Person (Foreground) with segmentation if enabled
+          if (removeBackground) {
+            if (latestResultsRef.current && latestResultsRef.current.segmentationMask) {
+              // Create offscreen canvas if it doesn't exist
+              if (!offscreenCanvasRef.current) {
+                offscreenCanvasRef.current = document.createElement('canvas');
+              }
+              const offscreen = offscreenCanvasRef.current;
+              offscreen.width = TARGET_W;
+              offscreen.height = TARGET_H;
+              const offCtx = offscreen.getContext('2d');
+              if (offCtx) {
+                offCtx.clearRect(0, 0, TARGET_W, TARGET_H);
+                offCtx.save();
+                offCtx.translate(TARGET_W, 0); // Mirror horizontally
+                offCtx.scale(-1, 1);
+                
+                // Draw video frame
+                offCtx.drawImage(videoRef.current, offsetX, offsetY, drawW, drawH);
+                
+                // Keep only target pixels (destination-in)
+                offCtx.globalCompositeOperation = 'destination-in';
+                offCtx.drawImage(latestResultsRef.current.segmentationMask, offsetX, offsetY, drawW, drawH);
+                
+                offCtx.restore();
+              }
+              // Draw the isolated person on top of the background
+              ctx.drawImage(offscreen, 0, 0);
+            }
+          }
 
           if (status === 'countdown') {
             ctx.fillStyle = 'rgba(0,0,0,0.3)';
@@ -439,6 +507,18 @@ export default function PoseTracker({
         autoPlay
         muted
       />
+      {removeBackground && bgType === 'video' && bgVideoUrl && (
+        <video
+          ref={bgVideoRef}
+          src={bgVideoUrl}
+          className="absolute top-0 left-0 w-0 h-0 opacity-0 pointer-events-none"
+          playsInline
+          autoPlay
+          loop
+          muted
+          crossOrigin="anonymous"
+        />
+      )}
       {/* Visible canvas for BOTH playing and recording */}
       <canvas
         ref={canvasRef}
@@ -447,3 +527,129 @@ export default function PoseTracker({
     </div>
   );
 }
+
+// Procedural Background Drawing Helpers
+let gridOffset = 0;
+const drawNeonGridBg = (ctx: CanvasRenderingContext2D, w: number, h: number) => {
+  // Clear with dark purple/black gradient
+  const bgGrad = ctx.createLinearGradient(0, 0, 0, h);
+  bgGrad.addColorStop(0, '#0f051d');
+  bgGrad.addColorStop(1, '#05010a');
+  ctx.fillStyle = bgGrad;
+  ctx.fillRect(0, 0, w, h);
+
+  // Draw perspective grid lines
+  ctx.strokeStyle = '#06b6d4'; // Cyan
+  ctx.lineWidth = 3;
+  
+  const horizonY = h * 0.45;
+  const numLines = 14;
+  
+  ctx.save();
+  ctx.shadowColor = '#06b6d4';
+  ctx.shadowBlur = 12;
+
+  // Vanishing lines
+  for (let i = 0; i <= numLines; i++) {
+    const xTop = (w / numLines) * i;
+    const xBottom = w / 2 + (xTop - w / 2) * 4; // Perspective spread
+    ctx.beginPath();
+    ctx.moveTo(xTop, horizonY);
+    ctx.lineTo(xBottom, h);
+    ctx.stroke();
+  }
+
+  // Receding horizontal lines
+  gridOffset = (gridOffset + 3) % 40;
+  for (let y = horizonY; y < h; y += 40) {
+    const adjustedY = y + gridOffset;
+    const alpha = Math.min(1, (adjustedY - horizonY) / (h - horizonY));
+    ctx.strokeStyle = `rgba(6, 182, 212, ${alpha * 0.7})`;
+    ctx.beginPath();
+    ctx.moveTo(0, adjustedY);
+    ctx.lineTo(w, adjustedY);
+    ctx.stroke();
+  }
+  ctx.restore();
+
+  // Draw floating cyber particles
+  const time = Date.now() * 0.001;
+  ctx.fillStyle = 'rgba(236, 72, 153, 0.6)'; // Neon pink
+  for (let i = 0; i < 12; i++) {
+    const px = (Math.sin(i * 123 + time) * 0.5 + 0.5) * w;
+    const py = horizonY + ((i * 59 + time * 60) % (h - horizonY));
+    const size = (1 - (py - horizonY) / (h - horizonY)) * 8 + 3;
+    ctx.beginPath();
+    ctx.arc(px, py, size, 0, Math.PI * 2);
+    ctx.fill();
+  }
+};
+
+let synthwaveOffset = 0;
+const drawSynthwaveBg = (ctx: CanvasRenderingContext2D, w: number, h: number) => {
+  // Dark synthwave sunset sky
+  const skyGrad = ctx.createLinearGradient(0, 0, 0, h);
+  skyGrad.addColorStop(0, '#0d0221');
+  skyGrad.addColorStop(0.5, '#3b0d60');
+  skyGrad.addColorStop(1, '#02000a');
+  ctx.fillStyle = skyGrad;
+  ctx.fillRect(0, 0, w, h);
+
+  // Draw a big retro sun
+  const sunX = w / 2;
+  const sunY = h * 0.4;
+  const sunRadius = 130;
+
+  const sunGrad = ctx.createLinearGradient(0, sunY - sunRadius, 0, sunY + sunRadius);
+  sunGrad.addColorStop(0, '#facc15'); // Yellow
+  sunGrad.addColorStop(0.5, '#f43f5e'); // Rose
+  sunGrad.addColorStop(1, '#ec4899'); // Pink
+
+  ctx.save();
+  ctx.shadowColor = '#f43f5e';
+  ctx.shadowBlur = 35;
+  ctx.fillStyle = sunGrad;
+  ctx.beginPath();
+  ctx.arc(sunX, sunY, sunRadius, Math.PI, 0); // half sun
+  ctx.fill();
+  ctx.restore();
+
+  // Sun horizontal cuts
+  ctx.fillStyle = '#0d0221';
+  for (let sy = sunY; sy < sunY + sunRadius; sy += 16) {
+    const thickness = Math.max(3, (sy - sunY) / 5);
+    ctx.fillRect(sunX - sunRadius - 10, sy, (sunRadius + 10) * 2, thickness);
+  }
+
+  // Draw synthwave grid
+  const horizonY = h * 0.5;
+  synthwaveOffset = (synthwaveOffset + 4) % 50;
+
+  ctx.strokeStyle = '#ec4899'; // Pink
+  ctx.lineWidth = 2.5;
+  ctx.save();
+  ctx.shadowColor = '#ec4899';
+  ctx.shadowBlur = 10;
+
+  const numLines = 12;
+  for (let i = 0; i <= numLines; i++) {
+    const xTop = (w / numLines) * i;
+    const xBottom = w / 2 + (xTop - w / 2) * 5;
+    ctx.beginPath();
+    ctx.moveTo(xTop, horizonY);
+    ctx.lineTo(xBottom, h);
+    ctx.stroke();
+  }
+
+  // Receding horizontal lines
+  for (let py = horizonY; py < h; py += 35) {
+    const adjustedY = py + synthwaveOffset;
+    const alpha = Math.min(1, (adjustedY - horizonY) / (h - horizonY));
+    ctx.strokeStyle = `rgba(236, 72, 153, ${alpha})`;
+    ctx.beginPath();
+    ctx.moveTo(0, adjustedY);
+    ctx.lineTo(w, adjustedY);
+    ctx.stroke();
+  }
+  ctx.restore();
+};
