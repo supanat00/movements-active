@@ -7,7 +7,7 @@ interface VFXOverlayProps {
   maxTime: number;
   score: number;
   targetScore: number;
-  gameStatus: 'idle' | 'countdown' | 'playing' | 'win' | 'lose' | 'ending' | 'preview';
+  gameStatus: 'idle' | 'tutorial' | 'countdown' | 'playing' | 'win' | 'lose' | 'ending' | 'preview';
   currentLandmarks?: React.MutableRefObject<any>;
 }
 
@@ -38,9 +38,7 @@ export default function VFXOverlay({ timeRemaining, maxTime, score, targetScore,
     resizeCanvas();
     window.addEventListener('resize', resizeCanvas);
 
-    // Load custom mist image
-    const mistImg = new Image();
-    mistImg.src = '/mist.png';
+    // Custom mist image removed as file was deleted
 
     const render = () => {
       ctx.clearRect(0, 0, canvas.width, canvas.height);

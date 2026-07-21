@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import Script from 'next/script';
+
 import { FFmpeg } from '@ffmpeg/ffmpeg';
 import { fetchFile, toBlobURL } from '@ffmpeg/util';
 import PoseTracker from './components/PoseTracker';
@@ -39,30 +39,19 @@ const playRoutedSound = (src: string) => {
   audio.play().catch(e => console.log('Audio play blocked:', e));
 };
 
-const playExerciseSound = (exercise: string) => {
-  let src = '';
-  if (exercise === 'jumping_jacks') src = '/sound/jump.mp3';
-  else if (exercise === 'squats') src = '/sound/squat.mp3';
-  else if (exercise === 'high_knees') src = '/sound/run.mp3';
-  
-  if (src) playRoutedSound(src);
-};
+
 
 const playScoreSound = () => {
   playRoutedSound('/sound/score.mp3');
 };
 
 export default function Home() {
-  const [gameStatus, setGameStatus] = useState<'idle' | 'countdown' | 'playing' | 'ending' | 'preview' | 'win' | 'lose'>('idle');
+  const [gameStatus, setGameStatus] = useState<'idle' | 'tutorial' | 'countdown' | 'playing' | 'ending' | 'preview' | 'win' | 'lose'>('idle');
   const [currentExercise, setCurrentExercise] = useState<'jumping_jacks' | 'squats' | 'high_knees'>('jumping_jacks');
-  const [gameMode, setGameMode] = useState<'normal' | 'score'>('normal');
-  const [globalTime, setGlobalTime] = useState(5.0);
-  const [exerciseTime, setExerciseTime] = useState(5.0);
+  const [globalTime, setGlobalTime] = useState(15.0);
   const [gamePoints, setGamePoints] = useState(0);
-  const [comboCount, setComboCount] = useState(0);
-  const [floatingPoints, setFloatingPoints] = useState<{id: number, text: string, type: 'plus'|'minus'|'bonus'}[]>([]);
-  const [removeBackground, setRemoveBackground] = useState(false);
-  const [bgType, setBgType] = useState<'neon-grid' | 'synthwave' | 'video'>('neon-grid');
+  const [removeBackground, setRemoveBackground] = useState(true);
+  const [bgType, setBgType] = useState<'neon-grid' | 'synthwave' | 'video' | 'image'>('image');
   const [bgVideoUrl, setBgVideoUrl] = useState<string | null>(null);
 
   const [recordedVideoUrl, setRecordedVideoUrl] = useState<string | null>(null);
@@ -71,11 +60,11 @@ export default function Home() {
   const [processedVideoUrls, setProcessedVideoUrls] = useState<Record<string, string>>({});
   const ffmpegRef = useRef<FFmpeg | null>(null);
 
-  const [timeRemaining, setTimeRemaining] = useState(15.0);
-  const [score, setScore] = useState(0);
-  const [countdown, setCountdown] = useState(3);
-  const targetScore = gameMode === 'score' ? 1 : (currentExercise === 'squats' ? 5 : 10);
-  const maxTime = gameMode === 'score' ? 30.0 : 15.0;
+  const [countdown, setCountdown] = useState(4);
+  const [showWarning, setShowWarning] = useState<string[] | null>(null);
+  
+  const [isSystemReady, setIsSystemReady] = useState(false);
+  const [isStarting, setIsStarting] = useState(false);
 
   const currentLandmarks = useRef<any>(null);
 
@@ -106,20 +95,18 @@ export default function Home() {
     loadFfmpeg().catch(console.error);
 
     // Preload assets to prevent flashing
-    if (typeof window !== "undefined") {
-      const preloadImages = ['/fitness_bg.png', '/mist.png'];
+      const preloadImages: string[] = [];
       preloadImages.forEach(src => {
         const img = new Image();
         img.src = src;
       });
 
-      const preloadAudio = ['/sound/jump.mp3', '/sound/squat.mp3', '/sound/run.mp3', '/sound/score.mp3'];
+      const preloadAudio = ['/sound/score.mp3'];
       preloadAudio.forEach(src => {
         const audio = new Audio();
         audio.src = src;
         audio.preload = 'auto';
       });
-    }
   }, []);
 
   const handleRecordingComplete = (blob: Blob) => {
@@ -200,33 +187,9 @@ export default function Home() {
     }
   };
 
-  const nextRandomExercise = useCallback((currentScore: number = 0) => {
-    const exercises: Array<'jumping_jacks' | 'squats' | 'high_knees'> = ['jumping_jacks', 'squats', 'high_knees'];
-    const randomExercise = exercises[Math.floor(Math.random() * exercises.length)];
-    setCurrentExercise(randomExercise);
-    setScore(0);
 
-    let newExerciseTime = 5.0;
-    if (currentScore >= 30) newExerciseTime = 3.0;
-    else if (currentScore >= 15) newExerciseTime = 4.0;
-    
-    setExerciseTime(newExerciseTime);
-    poseState.current.isJumping = false;
-    poseState.current.isSquatting = false;
-    poseState.current.lastKneeLifted = null;
-    
-    playExerciseSound(randomExercise);
-  }, []);
 
-  const addFloatingPoint = useCallback((text: string, type: 'plus'|'minus'|'bonus') => {
-    const id = Date.now();
-    setFloatingPoints(prev => [...prev, { id, text, type }]);
-    setTimeout(() => {
-      setFloatingPoints(prev => prev.filter(p => p.id !== id));
-    }, 1500);
-  }, []);
-
-  // 1. Single Timer loop for ALL time decrement
+  // Timer loop: decrement global 30s game time
   useEffect(() => {
     let timer: NodeJS.Timeout;
     let lastTime = performance.now();
@@ -236,133 +199,117 @@ export default function Home() {
         const now = performance.now();
         const dt = (now - lastTime) / 1000;
         lastTime = now;
-        
-        if (gameMode === 'normal') {
-          setTimeRemaining((prev) => Math.max(0, prev - dt));
-        } else if (gameMode === 'score') {
-          setGlobalTime((prev) => Math.max(0, prev - dt));
-          setExerciseTime((prev) => Math.max(0, prev - dt));
-        }
+        setGlobalTime((prev) => Math.max(0, prev - dt));
       }, 100);
     }
     return () => clearInterval(timer);
-  }, [gameStatus, gameMode]);
+  }, [gameStatus]);
 
-  // 2. Game Logic check loop (watches state changes)
+  // Game Logic check loop
   useEffect(() => {
     if (gameStatus !== 'playing') return;
-
-    if (gameMode === 'normal') {
-      if (score >= targetScore) {
-        setGameStatus('win');
-      } else if (timeRemaining <= 0) {
-        setGameStatus('lose');
-      }
-    } else if (gameMode === 'score') {
-      if (globalTime <= 0) {
-        // End the game
-        setGameStatus('ending');
-        setTimeout(() => setGameStatus('preview'), 2000);
-      } else if (score >= targetScore) {
-        const newCombo = comboCount + 1;
-        setComboCount(newCombo);
-        
-        let pointsGained = 1;
-        let pointType: 'plus' | 'bonus' = 'plus';
-        let pointText = '+1';
-        
-        const currentMaxTime = gamePoints >= 30 ? 3.0 : gamePoints >= 15 ? 4.0 : 5.0;
-        const timeSpent = currentMaxTime - exerciseTime;
-        
-        if (timeSpent <= 2.0) {
-           pointText = 'PERFECT! ⚡';
-           pointType = 'bonus';
-           pointsGained += 1;
-        }
-        
-        if (newCombo % 3 === 0) {
-          pointsGained += 2;
-          pointType = 'bonus';
-          pointText = pointText === '+1' ? '🔥 COMBO x3!' : 'PERFECT + COMBO!';
-        }
-        
-        if (newCombo % 5 === 0) {
-          setGlobalTime(prev => prev + 5);
-          addFloatingPoint('TIME EXTENDED!', 'plus');
-        }
-        
-        const nextScore = gamePoints + pointsGained;
-        setGamePoints(nextScore);
-        addFloatingPoint(pointText, pointType);
-        playScoreSound();
-        nextRandomExercise(nextScore);
-      } else if (exerciseTime <= 0) {
-        setComboCount(0);
-        setGamePoints(prev => Math.max(0, prev - 1));
-        addFloatingPoint('MISS!', 'minus');
-        nextRandomExercise(gamePoints);
-      }
+    if (globalTime <= 0) {
+      setGameStatus('ending');
+      setTimeout(() => setGameStatus('preview'), 2000);
     }
-  }, [score, targetScore, gameStatus, timeRemaining, gameMode, globalTime, exerciseTime, comboCount, addFloatingPoint, nextRandomExercise, gamePoints]);
+  }, [gameStatus, globalTime]);
+
+  // Warning Popup on 3s of inactivity (wait 3s -> show 1.5s -> wait 3s)
+  useEffect(() => {
+    if (gameStatus !== 'playing') {
+      setShowWarning(null);
+      return;
+    }
+
+    let isCancelled = false;
+    let timerId: NodeJS.Timeout;
+
+    const loop = () => {
+      if (isCancelled) return;
+      timerId = setTimeout(() => {
+        if (isCancelled) return;
+        const warnings = [
+          ["เกือบถูกแล้ว!", "ปรับท่าอีกนิด"],
+          ["ลองอีกครั้ง!", "ทำท่าให้ถูกต้อง"],
+          ["ท่าไม่ถูกต้อง", "ทำท่าใหม่อีกครั้ง"]
+        ];
+        setShowWarning(warnings[Math.floor(Math.random() * warnings.length)]);
+        
+        timerId = setTimeout(() => {
+          if (isCancelled) return;
+          setShowWarning(null);
+          loop();
+        }, 1500);
+      }, 3000);
+    };
+
+    loop();
+
+    return () => {
+      isCancelled = true;
+      clearTimeout(timerId);
+      setShowWarning(null);
+    };
+  }, [gameStatus, gamePoints]);
 
   useEffect(() => {
     if (gameStatus === 'countdown') {
-      if (countdown > 0) {
-        const timer = setTimeout(() => setCountdown(countdown - 1), 1000);
+      if (countdown >= 0) {
+        const timer = setTimeout(() => {
+          if (countdown === 0) {
+            setGameStatus('playing');
+            // Reset pose states right when playing starts
+            poseState.current.isJumping = false;
+            poseState.current.isSquatting = false;
+            poseState.current.lastKneeLifted = null;
+          } else {
+            setCountdown(countdown - 1);
+          }
+        }, 1000);
         return () => clearTimeout(timer);
-      } else {
-        setGameStatus('playing');
-        if (gameMode === 'normal') setTimeRemaining(maxTime);
-        // Reset pose states right when playing starts
-        poseState.current.isJumping = false;
-        poseState.current.isSquatting = false;
-        poseState.current.lastKneeLifted = null;
-        
-        if (gameMode === 'score') {
-          playExerciseSound(currentExercise);
-        }
       }
     }
-  }, [gameStatus, countdown, gameMode, currentExercise]);
+  }, [gameStatus, countdown, currentExercise]);
 
   const startGame = (mode?: 'normal' | 'score', exercise?: 'jumping_jacks' | 'squats' | 'high_knees') => {
     initAudioContext();
     if (!mode) {
       setGameStatus('idle');
-      setScore(0);
-      setTimeRemaining(15.0);
-      setGlobalTime(60.0);
-      setExerciseTime(5.0);
-      setGamePoints(0);
-      setComboCount(0);
-      setFloatingPoints([]);
-      setRecordedVideoUrl(null);
+    setGamePoints(0);
+    setGlobalTime(15.0);
+    setRecordedVideoUrl(null);
       setRawVideoBlob(null);
       setProcessedVideoUrls({});
       setIsProcessingVideo(false);
       return;
     }
     
-    setGameMode(mode);
-    setScore(0);
-    setGamePoints(0);
-    setComboCount(0);
-    setCountdown(3);
-    setFloatingPoints([]);
-    
-    if (mode === 'score') {
-      setGlobalTime(30.0);
-      setExerciseTime(5.0);
+    if (exercise) {
+      setCurrentExercise(exercise);
+    } else {
+      // Pick a random exercise at game start and keep it for the whole game
       const exercises: Array<'jumping_jacks' | 'squats' | 'high_knees'> = ['jumping_jacks', 'squats', 'high_knees'];
       const randomEx = exercises[Math.floor(Math.random() * exercises.length)];
       setCurrentExercise(randomEx);
-    } else {
-      setTimeRemaining(15.0);
-      if (exercise) setCurrentExercise(exercise);
     }
+
+    setGamePoints(0);
+    setGlobalTime(15.0);
     
-    setGameStatus('countdown');
+    if (isSystemReady) {
+      setGameStatus('tutorial');
+    } else {
+      setIsStarting(true);
+    }
   };
+
+  // Delay tutorial start until system is ready
+  useEffect(() => {
+    if (isStarting && isSystemReady) {
+      setIsStarting(false);
+      setGameStatus('tutorial');
+    }
+  }, [isStarting, isSystemReady]);
 
   const handlePoseDetected = useCallback((landmarks: any) => {
     currentLandmarks.current = landmarks;
@@ -370,18 +317,14 @@ export default function Home() {
 
     // Calculate angle using vector math (similar to Python OpenCV example)
     const calculateAngle = (a: any, b: any, c: any) => {
-      // Vector AB (Elbow to Shoulder)
       const abx = a.x - b.x;
       const aby = a.y - b.y;
-      // Vector CB (Hip to Shoulder)
       const cbx = c.x - b.x;
       const cby = c.y - b.y;
-
       const dotProduct = (abx * cbx + aby * cby);
       const magAB = Math.sqrt(abx * abx + aby * aby);
       const magCB = Math.sqrt(cbx * cbx + cby * cby);
-      
-      return Math.acos(dotProduct / (magAB * magCB)); // returns radians
+      return Math.acos(dotProduct / (magAB * magCB));
     };
 
     const rightElbow = landmarks[14];
@@ -406,13 +349,14 @@ export default function Home() {
       const rightTheta = calculateAngle(rightElbow, rightShoulder, rightHip);
       const leftTheta = calculateAngle(leftElbow, leftShoulder, leftHip);
       const theta = Math.max(rightTheta, leftTheta);
-      
       if (theta > (3 * Math.PI) / 4) {
         state.isJumping = true;
       } else if (state.isJumping && theta < Math.PI / 4) {
         state.isJumping = false;
         if (now - state.lastTime > 400) {
-          setScore((prev) => prev + 1);
+          // Each rep = +1 point directly
+          setGamePoints((prev) => prev + 1);
+          playScoreSound();
           state.lastTime = now;
         }
       }
@@ -421,46 +365,38 @@ export default function Home() {
       if (!isVisible(rightHip, rightKnee, rightAnkle, leftHip, leftKnee, leftAnkle)) return;
       const rightKneeAngle = calculateAngle(rightHip, rightKnee, rightAnkle);
       const leftKneeAngle = calculateAngle(leftHip, leftKnee, leftAnkle);
-      // Both knees must be bent, so we check the LEAST bent knee (max angle)
       const maxKneeAngle = Math.max(rightKneeAngle, leftKneeAngle); 
-      
-      // Squat: Both knees bent < 110 degrees (approx 1.9 rad)
       if (maxKneeAngle < 1.9) {
         state.isSquatting = true;
-      } 
-      // Stand: Both knees straightened > 150 degrees (approx 2.6 rad)
-      else if (state.isSquatting && rightKneeAngle > 2.5 && leftKneeAngle > 2.5) {
+      } else if (state.isSquatting && rightKneeAngle > 2.5 && leftKneeAngle > 2.5) {
         state.isSquatting = false;
         if (now - state.lastTime > 500) {
-          setScore((prev) => prev + 1);
+          setGamePoints((prev) => prev + 1);
+          playScoreSound();
           state.lastTime = now;
         }
       }
     }
     else if (currentExercise === 'high_knees') {
       if (!isVisible(rightHip, rightKnee, leftHip, leftKnee, rightAnkle, leftAnkle)) return;
-      
-      // Calculate leg length to make the threshold dynamic based on user's distance from camera
       const rightLegLength = rightAnkle.y - rightHip.y;
       const leftLegLength = leftAnkle.y - leftHip.y;
       const avgLegLength = (rightLegLength + leftLegLength) / 2;
-      
-      // Threshold is 25% of the leg length, but at least 8% of the screen height to prevent noise triggers
       const threshold = Math.max(0.08, avgLegLength * 0.25);
-
       const rightKneeForward = rightKnee.y < leftKnee.y - threshold;
       const leftKneeForward = leftKnee.y < rightKnee.y - threshold;
-
       if (rightKneeForward && state.lastKneeLifted !== 'right') {
         state.lastKneeLifted = 'right';
         if (now - state.lastTime > 250) {
-          setScore((prev) => prev + 1);
+          setGamePoints((prev) => prev + 1);
+          playScoreSound();
           state.lastTime = now;
         }
       } else if (leftKneeForward && state.lastKneeLifted !== 'left') {
         state.lastKneeLifted = 'left';
         if (now - state.lastTime > 250) {
-          setScore((prev) => prev + 1);
+          setGamePoints((prev) => prev + 1);
+          playScoreSound();
           state.lastTime = now;
         }
       }
@@ -469,25 +405,19 @@ export default function Home() {
 
   return (
     <main className="fixed inset-0 flex items-center justify-center bg-gray-950 font-sans overflow-hidden touch-none">
-      <Script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" strategy="afterInteractive" />
+
       
-      {/* 9:16 Aspect Ratio Container */}
+      {/* Responsive Container */}
       <div 
-        className="relative bg-black overflow-hidden shadow-2xl flex-shrink-0"
-        style={{ 
-          width: '100%', 
-          height: '100%', 
-          maxWidth: 'calc(100dvh * (9/16))', 
-          maxHeight: 'calc(100vw * (16/9))' 
-        }}
+        className="relative bg-black overflow-hidden shadow-2xl flex-shrink-0 game-container"
       >
         {/* Overlay Effects */}
         <div className="absolute inset-0 z-10 pointer-events-none">
           <VFXOverlay 
-            timeRemaining={timeRemaining} 
-            maxTime={maxTime} 
-            score={score}
-            targetScore={targetScore}
+            timeRemaining={globalTime} 
+            maxTime={30} 
+            score={gamePoints}
+            targetScore={999}
             gameStatus={gameStatus} 
             currentLandmarks={currentLandmarks}
           />
@@ -501,45 +431,37 @@ export default function Home() {
             onRecordingComplete={handleRecordingComplete}
             gamePoints={gamePoints}
             globalTime={globalTime}
-            gameMode={gameMode}
             currentExercise={currentExercise}
             countdownValue={countdown}
-            score={score}
-            targetScore={targetScore}
-            timeRemaining={timeRemaining}
-            exerciseTime={exerciseTime}
-            comboCount={comboCount}
-            floatingPoints={floatingPoints}
             removeBackground={removeBackground}
             bgType={bgType}
             bgVideoUrl={bgVideoUrl}
+            onSystemReady={() => setIsSystemReady(true)}
           />
         </div>
 
         {/* UI Overlay */}
         <div className="absolute inset-0 z-20 pointer-events-none">
           <GameUI 
-            timeRemaining={timeRemaining}
-            maxTime={maxTime}
-            score={score}
-            targetScore={targetScore}
+            showWarning={showWarning}
             gameStatus={gameStatus}
             currentExercise={currentExercise}
             countdownValue={countdown}
-            gameMode={gameMode}
             globalTime={globalTime}
-            exerciseTime={exerciseTime}
             gamePoints={gamePoints}
-            comboCount={comboCount}
-            floatingPoints={floatingPoints}
             recordedVideoUrl={recordedVideoUrl}
             isProcessingVideo={isProcessingVideo}
             removeBackground={removeBackground}
             bgType={bgType}
             bgVideoUrl={bgVideoUrl}
+            isStarting={isStarting}
             setRemoveBackground={setRemoveBackground}
             setBgType={setBgType}
             setBgVideoUrl={setBgVideoUrl}
+            onTutorialComplete={() => {
+              setCountdown(4);
+              setGameStatus('countdown');
+            }}
             onStart={startGame}
             onSave={handleSave}
             onShare={handleShare}

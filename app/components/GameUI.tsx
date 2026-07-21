@@ -1,6 +1,7 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import Image from 'next/image';
 
 interface VideoResultProps {
   recordedVideoUrl?: string | null;
@@ -10,7 +11,7 @@ interface VideoResultProps {
 }
 
 const VideoResult = ({ recordedVideoUrl, isProcessingVideo, onSave, onShare }: VideoResultProps) => {
-  const [isMuted, setIsMuted] = React.useState(false);
+  const [isMuted, setIsMuted] = React.useState(true);
   const videoRef = React.useRef<HTMLVideoElement>(null);
 
   const toggleMute = () => {
@@ -20,8 +21,14 @@ const VideoResult = ({ recordedVideoUrl, isProcessingVideo, onSave, onShare }: V
     }
   };
 
+  React.useEffect(() => {
+    if (recordedVideoUrl && videoRef.current) {
+      videoRef.current.play().catch(e => console.warn("Autoplay prevented:", e));
+    }
+  }, [recordedVideoUrl]);
+
   return (
-    <div className="mt-2 mb-0 w-full flex justify-center">
+    <div className="mt-1 mb-0 w-full flex justify-center">
       {recordedVideoUrl ? (
         <div className="flex flex-col gap-4 w-full max-w-[280px]">
           <div className="w-full aspect-[9/16] rounded-2xl shadow-xl border border-gray-600 bg-black overflow-hidden relative group">
@@ -45,130 +52,299 @@ const VideoResult = ({ recordedVideoUrl, isProcessingVideo, onSave, onShare }: V
               )}
             </button>
           </div>
-          <div className="flex gap-2">
-            <button onClick={() => onSave?.('360p')} disabled={isProcessingVideo} className="flex-1 flex items-center justify-center gap-1 bg-gray-800 hover:bg-black text-white font-bold py-3 px-1 rounded-xl shadow-md text-sm transition-transform active:scale-95 disabled:opacity-50 disabled:active:scale-100">
-              {isProcessingVideo ? 'รอสักครู่...' : '⬇️ 360p'}
-            </button>
-            <button onClick={() => onSave?.('720p')} disabled={isProcessingVideo} className="flex-1 flex items-center justify-center gap-1 bg-gray-800 hover:bg-black text-white font-bold py-3 px-1 rounded-xl shadow-md text-sm transition-transform active:scale-95 disabled:opacity-50 disabled:active:scale-100">
-              {isProcessingVideo ? 'รอสักครู่...' : '⬇️ 720p'}
-            </button>
-            <button onClick={onShare} disabled={isProcessingVideo} className="flex-1 flex items-center justify-center gap-1 bg-green-500 hover:bg-green-600 text-white font-bold py-3 px-1 rounded-xl shadow-md text-sm transition-transform active:scale-95 disabled:opacity-50 disabled:active:scale-100">
-              {isProcessingVideo ? 'รอสักครู่...' : '📲 แชร์'}
-            </button>
-          </div>
         </div>
-      ) : null}
+      ) : (
+        <div className="w-full aspect-[9/16] rounded-2xl shadow-xl border border-gray-600/50 bg-black overflow-hidden relative max-w-[280px]" />
+      )}
     </div>
   );
 };
 
 interface GameUIProps {
-  timeRemaining: number;
-  maxTime: number;
-  score: number;
-  targetScore: number;
-  gameStatus: 'idle' | 'countdown' | 'playing' | 'win' | 'lose' | 'ending' | 'preview';
+  gameStatus: 'idle' | 'tutorial' | 'countdown' | 'playing' | 'win' | 'lose' | 'ending' | 'preview';
   currentExercise: 'jumping_jacks' | 'squats' | 'high_knees';
   countdownValue?: number;
-  gameMode?: 'normal' | 'score';
   globalTime?: number;
-  exerciseTime?: number;
   gamePoints?: number;
-  comboCount?: number;
-  floatingPoints?: { id: number, text: string, type: 'plus' | 'minus' | 'bonus' }[];
+  showWarning?: string[] | null;
   recordedVideoUrl?: string | null;
   isProcessingVideo?: boolean;
   removeBackground?: boolean;
-  bgType?: 'neon-grid' | 'synthwave' | 'video';
+  bgType?: 'neon-grid' | 'synthwave' | 'video' | 'image';
   bgVideoUrl?: string | null;
+  isStarting?: boolean;
   setRemoveBackground?: (val: boolean) => void;
-  setBgType?: (val: 'neon-grid' | 'synthwave' | 'video') => void;
+  setBgType?: (val: 'neon-grid' | 'synthwave' | 'video' | 'image') => void;
   setBgVideoUrl?: (val: string | null) => void;
   onStart: (mode?: 'normal' | 'score', exercise?: 'jumping_jacks' | 'squats' | 'high_knees') => void;
+  onTutorialComplete?: () => void;
   onSave?: (resolution: '360p' | '720p') => void;
   onShare?: () => void;
 }
 
 export default function GameUI({
-  timeRemaining, maxTime, score, targetScore, gameStatus, currentExercise, countdownValue,
-  gameMode = 'normal', globalTime = 30, exerciseTime = 5, gamePoints = 0, comboCount = 0, floatingPoints = [],
+  gameStatus, currentExercise, countdownValue,
+  globalTime = 15, gamePoints = 0, showWarning = null,
   recordedVideoUrl = null, isProcessingVideo = false,
   removeBackground = false, bgType = 'neon-grid', bgVideoUrl = null,
+  isStarting = false,
   setRemoveBackground, setBgType, setBgVideoUrl,
-  onStart, onSave, onShare
+  onStart, onTutorialComplete, onSave, onShare
 }: GameUIProps) {
-  const cleanPercentage = Math.min((score / targetScore) * 100, 100);
-
-  const getExerciseName = () => {
-    if (currentExercise === 'squats') return 'สควอท';
-    if (currentExercise === 'high_knees') return 'วิ่งอยู่กับที่';
-    return 'กระโดดตบ';
-  };
-
-  const [showHowToPlay, setShowHowToPlay] = useState(true);
   const [showBgSettings, setShowBgSettings] = useState(false);
+  const [randomPoster, setRandomPoster] = useState<string>('/posters/poster1.webp');
+  const [tutorialStep, setTutorialStep] = useState<number>(1);
+
+  useEffect(() => {
+    const posters = ['/posters/poster1.webp', '/posters/poster2.webp', '/posters/poster3.webp'];
+    setRandomPoster(posters[Math.floor(Math.random() * posters.length)]);
+  }, []);
 
   return (
     <div className="absolute inset-0 w-full h-full pointer-events-none flex flex-col justify-between p-4 safe-area-pt overflow-hidden">
 
       {/* Floating Points Animations (Now handled by Canvas) */}
 
-      {/* Playing UI is now rendered on Canvas, so no DOM UI needed for countdown and playing */}
+
+      {/* Playing UI - Warning Popup */}
+      {gameStatus === 'playing' && showWarning && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center pointer-events-none">
+          <div className="bg-white/30 backdrop-blur-md border border-white/50 px-8 py-6 rounded-3xl flex flex-col items-center shadow-[0_10px_40px_rgba(0,0,0,0.2)] animate-in zoom-in-95 fade-in duration-300 min-w-[280px]">
+            <div className="w-20 h-20 bg-[#f83b3b] rounded-full flex items-center justify-center mb-4 shadow-lg border-2 border-transparent">
+              <svg xmlns="http://www.w3.org/2000/svg" className="w-10 h-10 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="3">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </div>
+            <p className="text-white text-2xl font-black text-center leading-tight drop-shadow-[0_2px_2px_rgba(0,0,0,0.5)]">
+              {showWarning[0]}<br />
+              {showWarning[1]}
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* HUD (Score, Logo, Time, Exercise Banner) */}
+      {(gameStatus === 'playing' || gameStatus === 'countdown') && (
+        <div className="absolute top-4 inset-x-0 px-4 z-50 pointer-events-none flex flex-col items-center animate-in fade-in slide-in-from-top-4 duration-500">
+          
+          {/* Top Row: Score | Logo | Time */}
+          <div className="flex w-full justify-between items-start">
+            
+            {/* Left: Score (Only visible during playing) */}
+            <div className="flex flex-col items-center w-24">
+              {gameStatus === 'playing' && (
+                <>
+                  <span className="text-white font-bold tracking-widest text-sm mb-1 drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)]">SCORE</span>
+                  <span className="text-[4.5rem] font-black italic text-white leading-none tracking-tighter" style={{ textShadow: '3px 3px 0 #003366, -1.5px -1.5px 0 #003366, 1.5px -1.5px 0 #003366, -1.5px 1.5px 0 #003366, 0 8px 16px rgba(0,0,0,0.5)' }}>
+                    {gamePoints}
+                  </span>
+                </>
+              )}
+            </div>
+
+            {/* Center: Logo */}
+            <div className="flex flex-col items-center shrink w-[45%] max-w-[200px] mx-2">
+              <img src="/logo.webp" alt="Logo" className="w-full drop-shadow-[0_4px_10px_rgba(255,255,255,0.3)] object-contain" />
+            </div>
+
+            {/* Right: Timer (Only visible during playing) */}
+            <div className="flex flex-col items-center w-28">
+              {gameStatus === 'playing' && (
+                <>
+                  <span className="text-white font-bold tracking-widest text-sm mb-1 drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)]">TIME</span>
+                  <div className="flex items-center space-x-0.5 drop-shadow-lg">
+                    <div className="w-8 h-12 bg-white/30 backdrop-blur-md rounded-md flex items-center justify-center border-[1.5px] border-white/50 shadow-[inset_0_2px_10px_rgba(255,255,255,0.4)]">
+                      <span className="text-white text-[2rem] font-bold leading-none mt-1">
+                        {Math.floor(Math.max(0, globalTime)).toString().padStart(2, '0')[0]}
+                      </span>
+                    </div>
+                    <div className="w-8 h-12 bg-white/30 backdrop-blur-md rounded-md flex items-center justify-center border-[1.5px] border-white/50 shadow-[inset_0_2px_10px_rgba(255,255,255,0.4)]">
+                      <span className="text-white text-[2rem] font-bold leading-none mt-1">
+                        {Math.floor(Math.max(0, globalTime)).toString().padStart(2, '0')[1]}
+                      </span>
+                    </div>
+                    <span className="text-white text-2xl font-bold mx-0.5 pb-1 drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)]">:</span>
+                    <div className="w-8 h-12 bg-white/30 backdrop-blur-md rounded-md flex items-center justify-center border-[1.5px] border-white/50 shadow-[inset_0_2px_10px_rgba(255,255,255,0.4)]">
+                      <span className="text-white text-[2rem] font-bold leading-none mt-1">
+                        {Math.floor(Math.max(0, (globalTime - Math.floor(globalTime)) * 100)).toString().padStart(2, '0')[0]}
+                      </span>
+                    </div>
+                    <div className="w-8 h-12 bg-white/30 backdrop-blur-md rounded-md flex items-center justify-center border-[1.5px] border-white/50 shadow-[inset_0_2px_10px_rgba(255,255,255,0.4)]">
+                      <span className="text-white text-[2rem] font-bold leading-none mt-1">
+                        {Math.floor(Math.max(0, (globalTime - Math.floor(globalTime)) * 100)).toString().padStart(2, '0')[1]}
+                      </span>
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+            
+          </div>
+
+          {/* Exercise Banner (Below Logo) */}
+          <div className="mt-2 inline-flex px-5 py-1.5 bg-gradient-to-r from-blue-700/50 via-cyan-500/50 to-blue-700/50 backdrop-blur-md border-[1.5px] border-cyan-200/80 rounded-full shadow-[0_0_20px_rgba(6,182,212,0.6),inset_0_0_15px_rgba(255,255,255,0.4)] justify-center items-center">
+            <span className="text-[1.1rem] font-black italic text-white tracking-wide leading-none whitespace-nowrap" style={{ textShadow: '1.5px 1.5px 0 #003366, -1.5px -1.5px 0 #003366, 1.5px -1.5px 0 #003366, -1.5px 1.5px 0 #003366, 0 4px 6px rgba(0,0,0,0.5)' }}>
+              {currentExercise === 'jumping_jacks' ? 'กระโดดตบ' : currentExercise === 'squats' ? 'สควอช' : 'วิ่งเข่าสูง'} ให้มากที่สุด
+            </span>
+          </div>
+          
+        </div>
+      )}
 
       {/* Main Menu Overlay (Centered) */}
       {gameStatus === 'idle' && (
         <div
-          className="absolute inset-0 z-40 flex flex-col items-center justify-center pointer-events-auto bg-cover bg-center"
-          style={{ backgroundImage: 'url(/fitness_bg.png)' }}
+          className="absolute inset-0 z-40 flex flex-col pointer-events-auto bg-cover bg-center"
+          style={{ backgroundImage: `url(${randomPoster})` }}
         >
-
-          {/* Title */}
-          <div className="mt-8 mb-2 text-center animate-in slide-in-from-top-10 fade-in duration-700">
-            <h1 className="text-5xl md:text-6xl font-black text-transparent bg-clip-text bg-gradient-to-br from-yellow-300 via-orange-500 to-red-600 drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)] mb-2 tracking-tighter uppercase">
-              Movement
-            </h1>
-            <h1 className="text-5xl md:text-6xl font-black text-white drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)] mb-3 tracking-tighter uppercase">
-              Active
-            </h1>
-            <div className="inline-block bg-white/20 backdrop-blur-sm px-4 py-1 rounded-full border border-white/30 shadow-lg">
-              <p className="text-yellow-300 font-bold text-sm tracking-widest uppercase drop-shadow-md">AI Fitness Challenge</p>
-            </div>
-          </div>
-          {/* Start Button */}
-          <div className="w-full max-w-[220px] flex flex-col gap-6 px-6 mt-48">
-            <button
-              onClick={() => onStart('score')}
-              className="relative group w-full bg-gradient-to-r from-cyan-400 to-blue-600 hover:from-cyan-300 hover:to-blue-500 text-white font-black py-3 px-4 rounded-2xl shadow-[0_6px_20px_rgba(6,182,212,0.5)] text-xl active:scale-95 transition-all duration-300 overflow-hidden border-b-4 border-blue-800"
-            >
-              <div className="absolute inset-0 bg-white/20 translate-y-full group-hover:translate-y-0 transition-transform duration-300 ease-out rounded-2xl"></div>
-              <span className="relative z-10 flex items-center justify-center gap-2 drop-shadow-md">
-                เริ่มเกม <span className="text-2xl animate-pulse">⚡</span>
-              </span>
-            </button>
-          </div>
-
-          {/* Help Button */}
-          {!showHowToPlay && (
-            <button
-              onClick={() => setShowHowToPlay(true)}
-              className="absolute top-4 left-4 w-10 h-10 bg-black/40 hover:bg-black/60 backdrop-blur-md border-2 border-white/30 rounded-full flex items-center justify-center text-white font-black text-xl shadow-[0_0_10px_rgba(0,0,0,0.5)] active:scale-95 transition-all duration-300 z-50 group"
-            >
-              <span className="group-hover:rotate-12 group-hover:scale-110 transition-transform duration-300">?</span>
-            </button>
-          )}
-
-          {/* Settings Button */}
+          {/* Invisible button placed over the 'เริ่มภารกิจ' button in the poster */}
           <button
-            onClick={() => setShowBgSettings(true)}
-            className="absolute top-4 right-4 w-10 h-10 bg-black/40 hover:bg-black/60 backdrop-blur-md border-2 border-white/30 rounded-full flex items-center justify-center text-white text-lg shadow-[0_0_10px_rgba(0,0,0,0.5)] active:scale-95 transition-all duration-300 z-50 group pointer-events-auto"
-          >
-            <span className="group-hover:rotate-45 transition-transform duration-300">⚙️</span>
-          </button>
-
+            onClick={() => onStart('score')}
+            className="absolute bottom-[12%] left-1/2 -translate-x-1/2 w-[70%] h-[12%] opacity-0 cursor-pointer"
+            aria-label="เริ่มภารกิจ"
+          />
           {/* Version Number */}
-          <div className="absolute bottom-4 right-4 text-white/40 text-[10px] font-mono tracking-widest pointer-events-none">
+          <div className="absolute top-6 left-6 text-white/70 text-xs font-mono tracking-widest pointer-events-none drop-shadow-md">
             v{process.env.NEXT_PUBLIC_COMMIT_HASH || 'dev'}
           </div>
+
+          {/* Loading Indicator */}
+          {isStarting && (
+            <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm pointer-events-auto rounded-3xl">
+              <div className="flex flex-col items-center">
+                <div className="w-16 h-16 border-4 border-cyan-500 border-t-transparent rounded-full animate-spin mb-4 shadow-[0_0_15px_rgba(6,182,212,0.5)]"></div>
+                <p className="text-white font-bold text-2xl drop-shadow-md tracking-wide">กำลังเตรียมพร้อมระบบ...</p>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Tutorial Overlay */}
+      {gameStatus === 'tutorial' && tutorialStep < 3 && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/40 pointer-events-auto p-6">
+          <div className="bg-gradient-to-b from-cyan-300/40 via-white/20 to-white/10 backdrop-blur-md w-full max-w-[340px] rounded-[2rem] shadow-[0_20px_50px_rgba(0,0,0,0.5)] relative animate-in zoom-in-95 fade-in duration-300 border-[1.5px] border-white/60 flex flex-col items-center overflow-hidden">
+            
+            {/* Header Area */}
+            <div className="w-full bg-cyan-400/50 backdrop-blur-md pt-6 pb-4 relative border-b border-white/40">
+              <h2 className="text-[2.5rem] font-black italic text-white text-center tracking-wider leading-none" 
+                  style={{ textShadow: '2px 2px 0 #005080, -2px -2px 0 #005080, 2px -2px 0 #005080, -2px 2px 0 #005080, 0 4px 8px rgba(0,0,0,0.4)' }}>
+                {tutorialStep === 1 ? 'วิธีเล่น' : 
+                  currentExercise === 'jumping_jacks' ? 'กระโดดตบ' :
+                  currentExercise === 'squats' ? 'สควอช' : 'วิ่งเข่าสูง'
+                }
+              </h2>
+
+              {/* Close Button */}
+              <button
+                onClick={() => {
+                  setTutorialStep(3);
+                }}
+                className="absolute top-4 right-4 w-9 h-9 flex items-center justify-center bg-red-500 hover:bg-red-400 text-white rounded-full font-black text-xl shadow-md active:scale-95 transition-transform"
+                aria-label="Close"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Content Area */}
+            <div className="flex flex-col items-center w-full px-6 py-4">
+              
+              {/* Content Page 1: General Info */}
+              {tutorialStep === 1 && (
+                <div className="flex flex-col w-full text-left mb-6 animate-in slide-in-from-right-8 duration-300">
+                  
+                  {/* Item 1 */}
+                  <div className="flex items-center py-4 border-b border-white/30">
+                    <div className="flex-shrink-0 w-12 h-12 rounded-full bg-white/40 border-[1.5px] border-white/60 flex items-center justify-center mr-5 shadow-[inset_0_2px_5px_rgba(255,255,255,0.8),0_2px_5px_rgba(0,0,0,0.1)]">
+                      <span className="text-3xl font-black text-[#1e3a8a] drop-shadow-[0_1px_1px_rgba(255,255,255,0.8)]">1</span>
+                    </div>
+                    <div>
+                      <h3 className="text-[1.4rem] font-black text-[#1e3a8a] leading-tight tracking-wide drop-shadow-[0_1px_1px_rgba(255,255,255,0.5)]">ยืนเต็มตัวหน้ากล้อง</h3>
+                    </div>
+                  </div>
+
+                  {/* Item 2 */}
+                  <div className="flex items-start py-4 border-b border-white/30">
+                    <div className="flex-shrink-0 w-12 h-12 rounded-full bg-white/40 border-[1.5px] border-white/60 flex items-center justify-center mr-5 shadow-[inset_0_2px_5px_rgba(255,255,255,0.8),0_2px_5px_rgba(0,0,0,0.1)]">
+                      <span className="text-3xl font-black text-[#1e3a8a] drop-shadow-[0_1px_1px_rgba(255,255,255,0.8)]">2</span>
+                    </div>
+                    <div className="pt-1">
+                      <h3 className="text-[1.4rem] font-black text-[#1e3a8a] leading-tight mb-1 tracking-wide drop-shadow-[0_1px_1px_rgba(255,255,255,0.5)]">เกมสุ่ม 1 ท่า</h3>
+                      <p className="text-[1.2rem] font-black text-[#1e3a8a] leading-tight drop-shadow-[0_1px_1px_rgba(255,255,255,0.5)]">สควอช<br/>วิ่งเข่าสูง<br/>กระโดดตบ</p>
+                    </div>
+                  </div>
+
+                  {/* Item 3 */}
+                  <div className="flex items-start py-4">
+                    <div className="flex-shrink-0 w-12 h-12 rounded-full bg-white/40 border-[1.5px] border-white/60 flex items-center justify-center mr-5 shadow-[inset_0_2px_5px_rgba(255,255,255,0.8),0_2px_5px_rgba(0,0,0,0.1)]">
+                      <span className="text-3xl font-black text-[#1e3a8a] drop-shadow-[0_1px_1px_rgba(255,255,255,0.8)]">3</span>
+                    </div>
+                    <div className="pt-1">
+                      <h3 className="text-[1.4rem] font-black text-[#1e3a8a] leading-tight mb-1 tracking-wide drop-shadow-[0_1px_1px_rgba(255,255,255,0.5)]">ทำให้ได้มากที่สุด</h3>
+                      <h3 className="text-[1.4rem] font-black text-[#1e3a8a] leading-tight tracking-wide drop-shadow-[0_1px_1px_rgba(255,255,255,0.5)]">ใน 15 วิ</h3>
+                    </div>
+                  </div>
+
+                </div>
+              )}
+
+              {/* Content Page 2: Specific Exercise */}
+              {tutorialStep === 2 && (
+                <div className="flex flex-col items-center w-full mb-6 animate-in slide-in-from-right-8 duration-300">
+
+                  <p className="text-[1.3rem] font-bold text-white leading-snug drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)] text-center mb-4">
+                    {currentExercise === 'jumping_jacks' && <><span className="block">กระโดดกางแขน-ขา</span><span className="block">แล้วกลับท่าเริ่มต้น</span></>}
+                    {currentExercise === 'squats' && <><span className="block">ย่อตัวลง ให้ต้นขา</span><span className="block">ขนานกับพื้น</span><span className="block">แล้วยืดขึ้นจนสุด</span></>}
+                    {currentExercise === 'high_knees' && <><span className="block">วิ่งอยู่กับที่</span><span className="block">ยกเข่าสูงสลับขา</span></>}
+                  </p>
+
+                  {/* Visual / Emoji */}
+                  <div className="h-[140px] flex items-center justify-center">
+                    <div className="text-[7rem] drop-shadow-[0_10px_20px_rgba(0,0,0,0.4)]">
+                      {currentExercise === 'jumping_jacks' && '🤸‍♀️'}
+                      {currentExercise === 'squats' && '🏋️‍♂️'}
+                      {currentExercise === 'high_knees' && '🏃'}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* NEXT / START Button */}
+              <button
+                onClick={() => {
+                  if (tutorialStep === 1) {
+                    setTutorialStep(2);
+                  } else {
+                    setTutorialStep(3);
+                  }
+                }}
+                className="mb-2 px-12 py-3 bg-white/20 backdrop-blur-md border-[3px] border-white/80 rounded-[2rem] shadow-[0_8px_16px_rgba(0,0,0,0.2),inset_0_4px_10px_rgba(255,255,255,0.4)] active:scale-95 transition-transform"
+              >
+                <span className="text-3xl font-black italic text-white tracking-widest drop-shadow-[0_2px_4px_rgba(0,0,0,0.6)]">
+                  NEXT
+                </span>
+              </button>
+              
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Start Game Button (Step 3) */}
+      {gameStatus === 'tutorial' && tutorialStep === 3 && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center pointer-events-auto">
+          <button
+            onClick={() => {
+              setTutorialStep(1);
+              onTutorialComplete?.();
+            }}
+            className="px-12 py-3 bg-white/20 backdrop-blur-md border border-white/70 rounded-[2.5rem] shadow-[0_6px_24px_rgba(0,0,0,0.3),inset_0_0_15px_rgba(255,255,255,0.5)] active:scale-95 transition-all hover:bg-white/30"
+          >
+            <span className="text-[3.5rem] font-black italic text-white tracking-widest leading-none drop-shadow-[0_3px_6px_rgba(0,0,0,0.6)]" style={{ textShadow: '2.5px 2.5px 0 #005080, -2.5px -2.5px 0 #005080, 2.5px -2.5px 0 #005080, -2.5px 2.5px 0 #005080, 0 6px 12px rgba(0,0,0,0.5)' }}>
+              เริ่มเล่น
+            </span>
+          </button>
         </div>
       )}
 
@@ -177,28 +353,17 @@ export default function GameUI({
 
         {gameStatus === 'win' && (
           <div className="bg-white/95 backdrop-blur-lg w-full max-w-sm p-6 rounded-3xl shadow-2xl text-center border-t-4 border-green-500 animate-in slide-in-from-bottom-10 fade-in duration-500 overflow-y-auto max-h-[85vh]">
-            {gameMode === 'score' ? (
-              <>
-                <div className="w-24 h-24 bg-yellow-100 rounded-full flex items-center justify-center mx-auto mb-4 shadow-inner">
-                  <span className="text-5xl">🏆</span>
-                </div>
-                <h2 className="text-3xl font-black text-gray-800 mb-1">TIME UP!</h2>
-                <p className="text-sm font-medium text-gray-500 mb-6">จบเกมชาเลนจ์</p>
+            <div className="w-24 h-24 bg-yellow-100 rounded-full flex items-center justify-center mx-auto mb-4 shadow-inner">
+              <span className="text-5xl">🏆</span>
+            </div>
+            <h2 className="text-3xl font-black text-gray-800 mb-1">TIME UP!</h2>
+            <p className="text-sm font-medium text-gray-500 mb-6">จบเกม 15 วินาที</p>
 
-                <div className="bg-gray-100 rounded-2xl p-4 mb-8 shadow-inner border border-gray-200">
-                  <p className="text-xs text-gray-500 font-bold uppercase mb-1">คะแนนรวม</p>
-                  <p className="text-6xl font-black text-yellow-500 drop-shadow-sm">{gamePoints}</p>
-                </div>
-              </>
-            ) : (
-              <>
-                <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-3">
-                  <span className="text-3xl">✨</span>
-                </div>
-                <h2 className="text-3xl font-black text-transparent bg-clip-text bg-gradient-to-r from-green-600 to-blue-500 mb-2">FRESH!</h2>
-                <p className="text-sm font-medium text-gray-600 mb-6">You successfully cleared all the musty smell!</p>
-              </>
-            )}
+            <div className="bg-gray-100 rounded-2xl p-4 mb-8 shadow-inner border border-gray-200">
+              <p className="text-xs text-gray-500 font-bold uppercase mb-1">คะแนนรวม</p>
+              <p className="text-6xl font-black text-yellow-500 drop-shadow-sm">{gamePoints}</p>
+            </div>
+
             <button
               onClick={() => onStart()}
               className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 px-6 rounded-2xl shadow-lg text-lg active:scale-95 transition-transform"
@@ -230,63 +395,58 @@ export default function GameUI({
 
       {/* Preview Full Screen */}
       {gameStatus === 'preview' && (
-        <div className="absolute inset-0 z-50 bg-gray-900 flex flex-col pointer-events-auto animate-in fade-in duration-500">
-          <div className="flex-1 flex flex-col items-center justify-center p-6 w-full max-w-lg mx-auto">
-            <VideoResult
-              recordedVideoUrl={recordedVideoUrl}
-              isProcessingVideo={isProcessingVideo}
-              onSave={onSave}
-              onShare={onShare}
-            />
-            {!isProcessingVideo && (
-              <button
-                onClick={() => onStart()}
-                className="w-full max-w-[280px] mt-4 bg-gradient-to-r from-blue-600 to-cyan-500 hover:from-blue-500 hover:to-cyan-400 text-white font-bold py-2 px-4 rounded-xl shadow-md text-sm active:scale-95 transition-all duration-300 border-b-2 border-blue-800"
-              >
-                เล่นอีกครั้ง
-              </button>
-            )}
-          </div>
-        </div>
-      )}
+        <div className="absolute inset-0 z-50 flex flex-col pointer-events-auto animate-in fade-in duration-500 bg-black/40 backdrop-blur-sm">
+          <div className="flex flex-col items-center justify-between h-full w-full px-6 py-6 safe-area-pt">
+            
+            {/* Top: Logo */}
+            <div className="w-[140px] shrink-0 mb-2">
+              <img src="/logo.webp" alt="Logo" className="w-full object-contain drop-shadow-[0_4px_8px_rgba(0,0,0,0.5)]" />
+            </div>
 
-      {/* How to Play Modal */}
-      {showHowToPlay && (
-        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm pointer-events-auto p-4">
-          <div className="bg-white w-full max-w-md rounded-3xl p-6 shadow-2xl relative animate-in zoom-in-95 duration-300">
-            <button
-              onClick={() => setShowHowToPlay(false)}
-              className="absolute top-4 right-4 w-8 h-8 flex items-center justify-center bg-gray-100 hover:bg-gray-200 text-gray-600 rounded-full font-bold active:scale-95 transition-transform"
-            >
-              ✕
-            </button>
-            <h2 className="text-2xl font-black text-center text-gray-800 mb-6 uppercase">
-              วิธีการเล่น
-            </h2>
-            <div className="space-y-4 text-gray-600">
-              <div className="bg-yellow-50 p-4 rounded-2xl">
-                <h3 className="font-bold text-yellow-800 mb-1">📸 1. การเตรียมตัว</h3>
-                <p className="text-sm">วางกล้องให้เห็นเต็มตัว และเว้นระยะห่างให้พอดี AI จะคอยจับการเคลื่อนไหวของคุณ</p>
-              </div>
-              <div className="bg-blue-50 p-4 rounded-2xl">
-                <h3 className="font-bold text-blue-800 mb-1">🏃‍♂️ 2. แข่งกับเวลา</h3>
-                <p className="text-sm">ระบบจะสุ่มท่าให้ทำทีละ 1 ท่า โดยมีเวลาจำกัดเพียง <strong>5 วินาที</strong> ยิ่งคะแนนเยอะเวลาจะยิ่งน้อยลงเรื่อยๆ!</p>
-              </div>
-              <div className="bg-green-50 p-4 rounded-2xl">
-                <h3 className="font-bold text-green-800 mb-1">⚡ 3. โบนัสพิเศษ</h3>
-                <ul className="text-sm list-disc list-inside space-y-1">
-                  <li><strong>Perfect:</strong> ทำท่าเสร็จใน 2 วิแรก ได้คะแนน +2</li>
-                  <li><strong>Combo x3:</strong> ทำสำเร็จ 3 ท่าติด ได้โบนัสคะแนน</li>
-                  <li><strong>Combo x5:</strong> ทำสำเร็จ 5 ท่าติด ได้เวลาเพิ่ม +5 วินาที</li>
-                </ul>
+            {/* Middle: Glass Card with Video */}
+            <div className="flex-1 flex flex-col items-center justify-center w-full max-w-[320px] min-h-0">
+              
+              <div className="bg-white/10 backdrop-blur-xl border border-white/30 rounded-2xl shadow-[0_8px_32px_rgba(0,0,0,0.3)] p-3 pb-5 w-full flex flex-col items-center">
+                <h2 className="text-lg font-medium tracking-[0.25em] text-white mb-3 mt-2 drop-shadow-md">PREVIEW</h2>
+                <VideoResult
+                  recordedVideoUrl={recordedVideoUrl}
+                  isProcessingVideo={isProcessingVideo}
+                />
+                
+                <div className="text-center mt-4">
+                  <p className="text-white text-sm font-medium drop-shadow-md">แชร์วิดีโอของคุณ</p>
+                  <p className="text-white text-sm font-medium drop-shadow-md">แล้วแท็กเพื่อนมาท้าดวลกัน!</p>
+                </div>
               </div>
             </div>
-            <button
-              onClick={() => setShowHowToPlay(false)}
-              className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 px-6 rounded-2xl shadow-lg text-lg active:scale-95 transition-transform mt-6"
-            >
-              เข้าใจแล้ว เริ่มเลย!
-            </button>
+
+            {/* Bottom: Action Buttons */}
+            <div className="w-full max-w-[320px] flex flex-col gap-3 shrink-0 mt-4 pb-2">
+              <div className="flex gap-3">
+                <button 
+                  onClick={() => onSave?.('360p')} 
+                  disabled={isProcessingVideo}
+                  className="flex-1 bg-white/15 hover:bg-white/25 backdrop-blur-md border-2 border-white/40 text-white font-black italic tracking-wider py-3.5 px-2 rounded-2xl shadow-[0_4px_20px_rgba(255,255,255,0.1)] text-xl transition-all active:scale-95 disabled:opacity-50"
+                >
+                  SAVE
+                </button>
+                <button 
+                  onClick={onShare} 
+                  disabled={isProcessingVideo}
+                  className="flex-1 bg-white/15 hover:bg-white/25 backdrop-blur-md border-2 border-white/40 text-white font-black italic tracking-wider py-3.5 px-2 rounded-2xl shadow-[0_4px_20px_rgba(255,255,255,0.1)] text-xl transition-all active:scale-95 disabled:opacity-50"
+                >
+                  SHARE
+                </button>
+              </div>
+              
+              <button
+                onClick={() => onStart()}
+                disabled={isProcessingVideo}
+                className="w-full bg-white/15 hover:bg-white/25 backdrop-blur-md border-2 border-white/40 text-white font-black italic tracking-wider py-3.5 px-6 rounded-2xl shadow-[0_4px_20px_rgba(255,255,255,0.1)] text-2xl transition-all active:scale-95 disabled:opacity-50"
+              >
+                PLAY AGAIN
+              </button>
+            </div>
           </div>
         </div>
       )}

@@ -1,6 +1,12 @@
 'use client';
 
 import React, { useRef, useEffect, useState } from 'react';
+import {
+  PoseLandmarker,
+  ImageSegmenter,
+  FilesetResolver,
+  ImageSegmenterResult,
+} from '@mediapipe/tasks-vision';
 
 interface PoseTrackerProps {
   onPoseDetected: (landmarks: any) => void;
@@ -8,100 +14,116 @@ interface PoseTrackerProps {
   onRecordingComplete?: (blob: Blob) => void;
   gamePoints?: number;
   globalTime?: number;
-  gameMode?: string;
   currentExercise?: string;
   countdownValue?: number;
-  score?: number;
-  targetScore?: number;
-  timeRemaining?: number;
-  exerciseTime?: number;
-  comboCount?: number;
-  floatingPoints?: { id: number, text: string, type: 'plus' | 'minus' | 'bonus' }[];
   removeBackground?: boolean;
-  bgType?: 'neon-grid' | 'synthwave' | 'video';
+  bgType?: 'neon-grid' | 'synthwave' | 'video' | 'image';
   bgVideoUrl?: string | null;
+  onSystemReady?: () => void;
 }
 
 export default function PoseTracker({
   onPoseDetected, gameStatus, onRecordingComplete,
-  gamePoints = 0, globalTime = 0, gameMode = 'normal', currentExercise = '', countdownValue = 3,
-  score = 0, targetScore = 1, timeRemaining = 0, exerciseTime = 0, comboCount = 0, floatingPoints = [],
-  removeBackground = false, bgType = 'neon-grid', bgVideoUrl = null
+  gamePoints = 0, globalTime = 0, currentExercise = '',  countdownValue = 0,
+  removeBackground = false,
+  bgType = 'synthwave',
+  bgVideoUrl = null,
+  onSystemReady,
 }: PoseTrackerProps) {
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const bgVideoRef = useRef<HTMLVideoElement>(null);
-  const offscreenCanvasRef = useRef<HTMLCanvasElement | null>(null);
-  const latestResultsRef = useRef<any>(null);
-  const cameraRef = useRef<any>(null);
-  const [isReady, setIsReady] = useState(false);
+  const videoRef         = useRef<HTMLVideoElement>(null);
+  const canvasRef        = useRef<HTMLCanvasElement>(null);
+  const bgVideoRef       = useRef<HTMLVideoElement>(null);
+  const offscreenRef     = useRef<HTMLCanvasElement | null>(null);
+  const maskCanvasRef    = useRef<HTMLCanvasElement | null>(null);
+  const segMaskDataRef   = useRef<HTMLCanvasElement | null>(null); // holds the converted mask canvas
 
-  // Store the latest callback in a ref to avoid re-triggering the camera setup when state changes
-  const onPoseDetectedRef = useRef(onPoseDetected);
+  const onPoseDetectedRef      = useRef(onPoseDetected);
   const onRecordingCompleteRef = useRef(onRecordingComplete);
-  const uiStateRef = useRef({ gamePoints, globalTime, gameMode, currentExercise, gameStatus, countdownValue, score, targetScore, timeRemaining, exerciseTime, comboCount, floatingPoints, removeBackground, bgType, bgVideoUrl });
+  const staticBgImgRef   = useRef<HTMLImageElement | null>(null);
 
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  // Keep state refs in sync for render loop
+  const uiStateRef = useRef({ gamePoints, globalTime, currentExercise, gameStatus, countdownValue, removeBackground, bgType, bgVideoUrl });
+
+  const mediaRecorderRef  = useRef<MediaRecorder | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
 
+  const [isReady, setIsReady] = useState(false);
+
   useEffect(() => {
-    onPoseDetectedRef.current = onPoseDetected;
+    onPoseDetectedRef.current      = onPoseDetected;
     onRecordingCompleteRef.current = onRecordingComplete;
-    uiStateRef.current = { gamePoints, globalTime, gameMode, currentExercise, gameStatus, countdownValue, score, targetScore, timeRemaining, exerciseTime, comboCount, floatingPoints, removeBackground, bgType, bgVideoUrl };
-  }, [onPoseDetected, onRecordingComplete, gamePoints, globalTime, gameMode, currentExercise, gameStatus, countdownValue, score, targetScore, timeRemaining, exerciseTime, comboCount, floatingPoints, removeBackground, bgType, bgVideoUrl]);
+    uiStateRef.current = { gamePoints, globalTime, currentExercise, gameStatus, countdownValue, removeBackground, bgType, bgVideoUrl };
+  }, [onPoseDetected, onRecordingComplete, gamePoints, globalTime, currentExercise, gameStatus, countdownValue, removeBackground, bgType, bgVideoUrl]);
+
+  // ── Init tasks-vision models and UI images ────────────────────────────────
+  const logoImgRef = useRef<HTMLImageElement | null>(null);
+  
+  useEffect(() => {
+    if (bgType === 'image') {
+      const img = new Image();
+      img.src = '/game_bg.webp';
+      if (img.complete) {
+        staticBgImgRef.current = img;
+      } else {
+        img.onload = () => { staticBgImgRef.current = img; };
+      }
+    }
+    
+    const logo = new Image();
+    logo.src = '/logo.webp';
+    if (logo.complete) {
+      logoImgRef.current = logo;
+    } else {
+      logo.onload = () => { logoImgRef.current = logo; };
+    }
+  }, [bgType]);
 
   // MediaRecorder logic based on gameStatus
   useEffect(() => {
     if (gameStatus === 'countdown' || gameStatus === 'playing') {
       if (canvasRef.current && !mediaRecorderRef.current) {
-        // Record from the Canvas at 30 FPS instead of the raw video
-        const videoStream = canvasRef.current.captureStream(60);
+        // Record directly from the CanvasCaptureMediaStream (30 FPS)
+        const stream = canvasRef.current.captureStream(30);
         const audioStream = (window as any).gameAudioStream as MediaStream;
 
-        let combinedStream = videoStream;
-        if (audioStream) {
-          const tracks = [...videoStream.getVideoTracks(), ...audioStream.getAudioTracks()];
-          combinedStream = new MediaStream(tracks);
+        if (audioStream && audioStream.getAudioTracks().length > 0) {
+          audioStream.getAudioTracks().forEach(track => {
+            if (track.readyState === 'live') {
+              stream.addTrack(track);
+            }
+          });
         }
 
         try {
-          mediaRecorderRef.current = new MediaRecorder(combinedStream, {
-            mimeType: 'video/webm;codecs=vp8,opus',
-            videoBitsPerSecond: 8000000 // 8 Mbps for high quality
-          });
-        } catch (e) {
-          try {
-            mediaRecorderRef.current = new MediaRecorder(combinedStream, {
-              mimeType: 'video/webm',
-              videoBitsPerSecond: 8000000
-            });
-          } catch (e2) {
-            mediaRecorderRef.current = new MediaRecorder(combinedStream, {
-              videoBitsPerSecond: 8000000
-            });
-          }
-        }
+          const recorder = new MediaRecorder(stream);
+          mediaRecorderRef.current = recorder;
+          const activeMimeType = recorder.mimeType || 'video/webm';
 
-        recordedChunksRef.current = [];
-
-        mediaRecorderRef.current.ondataavailable = (event) => {
-          if (event.data.size > 0) {
-            recordedChunksRef.current.push(event.data);
-          }
-        };
-
-        mediaRecorderRef.current.onstop = () => {
-          if (recordedChunksRef.current.length > 0) {
-            const mimeType = mediaRecorderRef.current?.mimeType || 'video/webm';
-            const blob = new Blob(recordedChunksRef.current, { type: mimeType });
-            if (onRecordingCompleteRef.current) {
-              onRecordingCompleteRef.current(blob);
-            }
-          }
           recordedChunksRef.current = [];
-        };
 
-        mediaRecorderRef.current.start(1000);
+          recorder.ondataavailable = (event) => {
+            if (event.data.size > 0) {
+              recordedChunksRef.current.push(event.data);
+            }
+          };
+
+          recorder.onstop = () => {
+            if (recordedChunksRef.current.length > 0) {
+              const blob = new Blob(recordedChunksRef.current, { type: activeMimeType });
+              console.log('[MediaRecorder] Created blob size:', blob.size, 'type:', activeMimeType);
+              if (onRecordingCompleteRef.current) {
+                onRecordingCompleteRef.current(blob);
+              }
+            } else {
+              console.warn('[MediaRecorder] No chunks recorded!');
+            }
+            recordedChunksRef.current = [];
+          };
+
+          recorder.start(1000);
+        } catch (e) {
+          console.error('[MediaRecorder] Error creating instance:', e);
+        }
       }
     } else if (gameStatus === 'preview' || gameStatus === 'win' || gameStatus === 'lose' || gameStatus === 'idle') {
       if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
@@ -111,112 +133,108 @@ export default function PoseTracker({
     }
   }, [gameStatus]);
 
-  // Synchronize background video playback
+  // ── Background video sync ─────────────────────────────────────────────────
   useEffect(() => {
     if (removeBackground && bgType === 'video' && bgVideoRef.current) {
       if (gameStatus === 'playing' || gameStatus === 'countdown') {
-        bgVideoRef.current.play().catch((e) => console.log('Background video play failed:', e));
+        bgVideoRef.current.play().catch(() => {});
       } else {
         bgVideoRef.current.pause();
       }
     }
   }, [gameStatus, removeBackground, bgType, bgVideoUrl]);
 
+  // ── Init tasks-vision models ──────────────────────────────────────────────
   useEffect(() => {
-    // Check if mediapipe is loaded from CDN
-    const checkMediaPipe = setInterval(() => {
-      if ((window as any).Pose) {
-        clearInterval(checkMediaPipe);
+    let alive = true;
+    (async () => {
+      try {
+        const vision = await FilesetResolver.forVisionTasks(
+          'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm'
+        );
+        if (!alive) return;
         setIsReady(true);
+        // Store resolvers in window for main effect
+        (window as any).__visionFileset = vision;
+      } catch (e) {
+        console.error('FilesetResolver failed', e);
       }
-    }, 100);
-
-    return () => clearInterval(checkMediaPipe);
+    })();
+    return () => { alive = false; };
   }, []);
 
+  // ── Core camera + render loop ──────────────────────────────────────────────
   useEffect(() => {
     if (!isReady || !videoRef.current) return;
 
-    const { Pose } = (window as any);
+    const vision = (window as any).__visionFileset;
+    if (!vision) return;
 
-    const pose = new Pose({
-      locateFile: (file: string) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`,
-    });
+    let poseLandmarker: PoseLandmarker | null = null;
+    let imageSegmenter: ImageSegmenter | null = null;
+    let animFrameId: number;
+    let alive = true;
 
-    pose.setOptions({
-      modelComplexity: 0, // 0=light (best for mobile/web AR), 1=full, 2=heavy
-      smoothLandmarks: true,
-      enableSegmentation: true,
-      smoothSegmentation: true,
-      minDetectionConfidence: 0.5,
-      minTrackingConfidence: 0.5,
-    });
+    const MODEL_BASE = 'https://storage.googleapis.com/mediapipe-models';
 
-    pose.onResults((results: any) => {
-      latestResultsRef.current = results;
-      if (results.poseLandmarks && videoRef.current) {
-        const vW = videoRef.current.videoWidth;
-        const vH = videoRef.current.videoHeight;
-        const cW = window.innerWidth;
-        const cH = window.innerHeight;
-
-        // Calculate object-cover dimensions to map coordinates correctly
-        const scale = Math.max(cW / vW, cH / vH);
-        const drawW = vW * scale;
-        const drawH = vH * scale;
-        const offsetX = (cW - drawW) / 2;
-        const offsetY = (cH - drawH) / 2;
-
-        const mappedLandmarks = results.poseLandmarks.map((lm: any) => {
-          const pixelX = offsetX + (lm.x * drawW);
-          const pixelY = offsetY + (lm.y * drawH);
-
-          return {
-            ...lm,
-            x: pixelX / cW,
-            y: pixelY / cH
-          };
-        });
-
-        // Pass transformed landmarks up
-        onPoseDetectedRef.current(mappedLandmarks);
-      }
-    });
-
-    let animationFrameId: number;
-    let isStreamActive = true;
-    let isProcessingPose = false;
-    let lastPoseTime = 0;
-
-    // Native Camera System for HD/FullHD
-    const startCamera = async () => {
+    const initModels = async () => {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            facingMode: 'user'
-          }
-        });
+        // Init both in parallel — use CPU as fallback if GPU fails
+        const poseOptions = {
+          baseOptions: {
+            modelAssetPath: `${MODEL_BASE}/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task`,
+            delegate: 'GPU' as const,
+          },
+          runningMode: 'VIDEO' as const,
+          numPoses: 1,
+          minPoseDetectionConfidence: 0.5,
+          minPosePresenceConfidence: 0.5,
+          minTrackingConfidence: 0.5,
+          outputSegmentationMasks: false,
+        };
+        const segOptions = {
+          baseOptions: {
+            modelAssetPath: `${MODEL_BASE}/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.tflite`,
+            delegate: 'GPU' as const,
+          },
+          runningMode: 'VIDEO' as const,
+          outputCategoryMask: false,
+          outputConfidenceMasks: true,
+        };
 
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-          videoRef.current.onloadedmetadata = () => {
-            videoRef.current?.play();
-            // Start the processing loop
-            processVideo();
-          };
+        try {
+          [poseLandmarker, imageSegmenter] = await Promise.all([
+            PoseLandmarker.createFromOptions(vision, poseOptions),
+            ImageSegmenter.createFromOptions(vision, segOptions),
+          ]);
+        } catch (gpuErr) {
+          console.warn('GPU delegate failed, falling back to CPU:', gpuErr);
+          [poseLandmarker, imageSegmenter] = await Promise.all([
+            PoseLandmarker.createFromOptions(vision, { ...poseOptions, baseOptions: { ...poseOptions.baseOptions, delegate: 'CPU' } }),
+            ImageSegmenter.createFromOptions(vision, { ...segOptions, baseOptions: { ...segOptions.baseOptions, delegate: 'CPU' } }),
+          ]);
         }
+
+        if (!alive) return;
+        startCamera();
       } catch (err) {
-        console.error("Error accessing native camera: ", err);
+        console.error('Model init failed:', err);
+        // Still start camera so user sees themselves even without segmentation
+        if (alive) startCamera();
       }
     };
 
-    const processVideo = async () => {
-      if (!isStreamActive || !videoRef.current) return;
+    // ── rAF render loop ───────────────────────────────────────────────────────
+    const renderFrame = () => {
+      if (!alive) return;
+      if (!videoRef.current || !canvasRef.current) {
+        animFrameId = requestAnimationFrame(renderFrame);
+        return;
+      }
 
-      // 1. Draw to canvas as fast as possible for smooth recording
-      if (canvasRef.current && videoRef.current) {
-        const ctx = canvasRef.current.getContext('2d');
-        if (ctx) {
+      const ctx = canvasRef.current.getContext('2d');
+      if (!ctx) { animFrameId = requestAnimationFrame(renderFrame); return; }
+
           const TARGET_W = 720;
           const TARGET_H = 1280;
           if (canvasRef.current.width !== TARGET_W) {
@@ -224,271 +242,264 @@ export default function PoseTracker({
             canvasRef.current.height = TARGET_H;
           }
 
-          const vW = videoRef.current.videoWidth;
-          const vH = videoRef.current.videoHeight;
-          const scale = Math.max(TARGET_W / vW, TARGET_H / vH);
-          const drawW = vW * scale;
-          const drawH = vH * scale;
-          const offsetX = (TARGET_W - drawW) / 2;
-          const offsetY = (TARGET_H - drawH) / 2;
+      const vW = videoRef.current.videoWidth;
+      const vH = videoRef.current.videoHeight;
+      if (!vW || !vH) { animFrameId = requestAnimationFrame(renderFrame); return; }
 
-          // Get current UI states
-          const { gamePoints, globalTime, gameStatus: status, countdownValue, score, targetScore, timeRemaining, exerciseTime, comboCount, gameMode, currentExercise, floatingPoints, removeBackground, bgType } = uiStateRef.current;
+      const scale   = Math.max(TARGET_W / vW, TARGET_H / vH);
+      const drawW   = vW * scale;
+      const drawH   = vH * scale;
+      const offsetX = (TARGET_W - drawW) / 2;
+      const offsetY = (TARGET_H - drawH) / 2;
 
-          // 1. Draw Background
-          if (removeBackground) {
-            if (bgType === 'video' && bgVideoRef.current && bgVideoRef.current.readyState >= 2) {
-              const bgVW = bgVideoRef.current.videoWidth;
-              const bgVH = bgVideoRef.current.videoHeight;
-              const bgScale = Math.max(TARGET_W / bgVW, TARGET_H / bgVH);
-              const bgDrawW = bgVW * bgScale;
-              const bgDrawH = bgVH * bgScale;
-              const bgOffsetX = (TARGET_W - bgDrawW) / 2;
-              const bgOffsetY = (TARGET_H - bgDrawH) / 2;
-              ctx.drawImage(bgVideoRef.current, bgOffsetX, bgOffsetY, bgDrawW, bgDrawH);
-            } else if (bgType === 'synthwave') {
-              drawSynthwaveBg(ctx, TARGET_W, TARGET_H);
-            } else {
-              drawNeonGridBg(ctx, TARGET_W, TARGET_H);
-            }
-          } else {
-            // Draw camera full frame if not removing background
-            ctx.save();
-            ctx.translate(TARGET_W, 0); // Mirror horizontally
-            ctx.scale(-1, 1);
-            ctx.drawImage(videoRef.current, offsetX, offsetY, drawW, drawH);
-            ctx.restore();
+      const { gamePoints, globalTime, currentExercise, countdownValue, gameStatus: status, removeBackground, bgType } = uiStateRef.current;
+
+      // ── 1. Always draw mirrored camera first (base layer / fallback) ─────────
+      ctx.save();
+      ctx.translate(TARGET_W, 0); ctx.scale(-1, 1);
+      ctx.drawImage(videoRef.current, offsetX, offsetY, drawW, drawH);
+      ctx.restore();
+
+      // ── 2. If removeBackground: overlay synthetic bg + composited person ─────
+      if (removeBackground) {
+        // Draw the background
+        const bgVideoEl = bgVideoRef.current;
+        if (bgType === 'video' && bgVideoEl && bgVideoEl.readyState >= 2) {
+          const bs = Math.max(TARGET_W / bgVideoEl.videoWidth, TARGET_H / bgVideoEl.videoHeight);
+          ctx.drawImage(bgVideoEl,
+            (TARGET_W - bgVideoEl.videoWidth * bs) / 2, (TARGET_H - bgVideoEl.videoHeight * bs) / 2,
+            bgVideoEl.videoWidth * bs, bgVideoEl.videoHeight * bs);
+        } else if (bgType === 'image' && staticBgImgRef.current) {
+          const img = staticBgImgRef.current;
+          const bs = Math.max(TARGET_W / img.width, TARGET_H / img.height);
+          ctx.drawImage(img,
+            (TARGET_W - img.width * bs) / 2, (TARGET_H - img.height * bs) / 2,
+            img.width * bs, img.height * bs);
+        } else if (bgType === 'synthwave') {
+          drawSynthwaveBg(ctx, TARGET_W, TARGET_H);
+        } else {
+          drawNeonGridBg(ctx, TARGET_W, TARGET_H);
+        }
+
+        // Overlay person on top of background using segmentation mask
+        if (segMaskDataRef.current) {
+          const maskSource = segMaskDataRef.current;
+          
+          if (maskSource.width > 0 && maskSource.height > 0) {
+            if (!maskCanvasRef.current) maskCanvasRef.current = document.createElement('canvas');
+            const mc = maskCanvasRef.current;
+            if (mc.width !== TARGET_W || mc.height !== TARGET_H) { mc.width = TARGET_W; mc.height = TARGET_H; }
+            const mCtx = mc.getContext('2d')!;
+            
+            mCtx.clearRect(0, 0, TARGET_W, TARGET_H);
+            mCtx.save();
+            mCtx.translate(TARGET_W, 0); mCtx.scale(-1, 1);
+            mCtx.drawImage(maskSource, offsetX, offsetY, drawW, drawH);
+            mCtx.restore();
+
+            // Person canvas: mirrored video cut by blurred mask
+            if (!offscreenRef.current) offscreenRef.current = document.createElement('canvas');
+            const oc = offscreenRef.current;
+            if (oc.width !== TARGET_W || oc.height !== TARGET_H) { oc.width = TARGET_W; oc.height = TARGET_H; }
+            const oCtx = oc.getContext('2d')!;
+            oCtx.clearRect(0, 0, TARGET_W, TARGET_H);
+            oCtx.save();
+            oCtx.translate(TARGET_W, 0); oCtx.scale(-1, 1);
+            oCtx.drawImage(videoRef.current, offsetX, offsetY, drawW, drawH);
+            oCtx.restore();
+            oCtx.globalCompositeOperation = 'destination-in';
+            oCtx.drawImage(mc, 0, 0);
+            oCtx.globalCompositeOperation = 'source-over';
+
+            ctx.drawImage(oc, 0, 0);
           }
-
-          // 2. Draw Person (Foreground) with segmentation if enabled
-          if (removeBackground) {
-            if (latestResultsRef.current && latestResultsRef.current.segmentationMask) {
-              // Create offscreen canvas if it doesn't exist
-              if (!offscreenCanvasRef.current) {
-                offscreenCanvasRef.current = document.createElement('canvas');
-              }
-              const offscreen = offscreenCanvasRef.current;
-              offscreen.width = TARGET_W;
-              offscreen.height = TARGET_H;
-              const offCtx = offscreen.getContext('2d');
-              if (offCtx) {
-                offCtx.clearRect(0, 0, TARGET_W, TARGET_H);
-                offCtx.save();
-                offCtx.translate(TARGET_W, 0); // Mirror horizontally
-                offCtx.scale(-1, 1);
-                
-                // Draw video frame
-                offCtx.drawImage(videoRef.current, offsetX, offsetY, drawW, drawH);
-                
-                // Keep only target pixels (destination-in)
-                offCtx.globalCompositeOperation = 'destination-in';
-                offCtx.drawImage(latestResultsRef.current.segmentationMask, offsetX, offsetY, drawW, drawH);
-                
-                offCtx.restore();
-              }
-              // Draw the isolated person on top of the background
-              ctx.drawImage(offscreen, 0, 0);
-            }
-          }
-
-          if (status === 'countdown') {
-            ctx.fillStyle = 'rgba(0,0,0,0.3)';
-            ctx.fillRect(0, 0, canvasRef.current.width, canvasRef.current.height);
-
-            ctx.textAlign = 'center';
-            ctx.fillStyle = '#ffffff';
-            ctx.font = 'bold 90px sans-serif';
-            ctx.fillText('เตรียมตัว!', canvasRef.current.width / 2, canvasRef.current.height / 2 - 120);
-
-            ctx.fillStyle = '#22c55e';
-            ctx.font = '900 230px sans-serif';
-            ctx.fillText(`${countdownValue}`, canvasRef.current.width / 2, canvasRef.current.height / 2 + 100);
-          }
-
-          if (status === 'playing') {
-            const drawRoundRect = (x: number, y: number, w: number, h: number, radius: number, fill?: string, stroke?: string) => {
-              ctx.beginPath();
-              ctx.roundRect(x, y, w, h, radius);
-              if (fill) { ctx.fillStyle = fill; ctx.fill(); }
-              if (stroke) { ctx.lineWidth = 4; ctx.strokeStyle = stroke; ctx.stroke(); }
-            };
-
-            const cleanPercentage = Math.min(((score || 0) / (targetScore || 1)) * 100, 100);
-
-            if (gameMode === 'score') {
-              // Top Left Score
-              drawRoundRect(34, 46, 200, 120, 25, 'rgba(0,0,0,0.3)'); // fake shadow
-              drawRoundRect(30, 40, 200, 120, 25, 'rgba(17,24,39,0.95)', '#facc15');
-              ctx.fillStyle = '#facc15';
-              ctx.font = 'bold 20px sans-serif';
-              ctx.textAlign = 'center';
-              ctx.fillText('SCORE', 130, 75);
-              ctx.fillStyle = '#ffffff';
-              ctx.font = '900 65px sans-serif';
-              ctx.fillText(`${gamePoints || 0}`, 130, 140);
-
-              // Top Right Time
-              drawRoundRect(720 - 230 + 5, 40 + 10, 200, 120, 25, 'rgba(0,0,0,0.15)'); // fake shadow
-              drawRoundRect(720 - 230, 40, 200, 120, 25, 'rgba(255,255,255,0.98)', '#f3f4f6');
-              ctx.fillStyle = '#6b7280';
-              ctx.font = 'bold 20px sans-serif';
-              ctx.fillText('TIME LEFT', 720 - 130, 75);
-              ctx.fillStyle = '#dc2626';
-              ctx.font = '900 65px sans-serif';
-              ctx.fillText(`${Math.ceil(globalTime || 0)}s`, 720 - 130, 140);
-            } else {
-              // Top Center Time (Normal)
-              drawRoundRect(720 / 2 - 120 + 5, 40 + 10, 240, 90, 45, 'rgba(0,0,0,0.15)'); // fake shadow
-              drawRoundRect(720 / 2 - 120, 40, 240, 90, 45, 'rgba(255,255,255,0.95)', '#f3f4f6');
-              ctx.fillStyle = '#dc2626';
-              ctx.font = '900 54px sans-serif';
-              ctx.textAlign = 'center';
-              ctx.fillText(`${Math.ceil(timeRemaining || 0)}s`, 720 / 2, 105);
-            }
-
-            // Clean Meter
-            const cleanY = gameMode === 'score' ? 190 : 160;
-            drawRoundRect(720 / 2 - 300, cleanY, 600, 115, 25, 'rgba(0,0,0,0.7)', 'rgba(255,255,255,0.15)');
-            ctx.fillStyle = '#ffffff';
-            ctx.font = 'bold 22px sans-serif';
-            ctx.textAlign = 'left';
-            ctx.fillText(gameMode === 'score' ? `🔥 COMBO: ${comboCount}` : 'CLEAN METER', 720 / 2 - 270, cleanY + 45);
-            ctx.fillStyle = '#4ade80';
-            ctx.font = '900 25px sans-serif';
-            ctx.textAlign = 'right';
-            ctx.fillText(gameMode === 'score' ? `${score}/${targetScore}` : `${Math.round(cleanPercentage)}%`, 720 / 2 + 270, cleanY + 45);
-
-            // Clean Meter Bar
-            drawRoundRect(720 / 2 - 270, cleanY + 65, 540, 30, 15, '#1f2937', 'rgba(255,255,255,0.2)');
-            const fillW = 540 * (cleanPercentage / 100);
-            const grad = ctx.createLinearGradient(720 / 2 - 270, 0, 720 / 2 - 270 + 540, 0);
-            grad.addColorStop(0, '#3b82f6');
-            grad.addColorStop(1, '#4ade80');
-            if (fillW > 0) {
-              ctx.beginPath();
-              ctx.roundRect(720 / 2 - 270, cleanY + 65, fillW, 30, 15);
-              ctx.fillStyle = grad;
-              ctx.fill();
-            }
-
-            // Bottom Center Exercise
-            const getExName = (ex?: string) => {
-              if (ex === 'squats') return 'สควอท';
-              if (ex === 'high_knees') return 'วิ่งอยู่กับที่';
-              return 'กระโดดตบ';
-            };
-            const exName = getExName(currentExercise);
-            ctx.font = 'bold 43px sans-serif';
-            const exWText = ctx.measureText(exName).width;
-            const totalBoxW = exWText + 114;
-            const baseY = 1280 - (gameMode === 'score' ? 240 : 150);
-
-            drawRoundRect(720 / 2 - totalBoxW / 2 + 5, baseY + 10, totalBoxW, 90, 45, 'rgba(0,0,0,0.4)'); // fake shadow
-            drawRoundRect(720 / 2 - totalBoxW / 2, baseY, totalBoxW, 90, 45, 'rgba(0,0,0,0.85)', 'rgba(255,255,255,0.25)');
-
-            ctx.textAlign = 'left';
-            ctx.fillStyle = '#ffffff';
-            ctx.font = 'bold 43px sans-serif';
-            ctx.fillText(exName, 720 / 2 - totalBoxW / 2 + 57, baseY + 62);
-
-            if (gameMode === 'score') {
-              const timeY = baseY + 118;
-              drawRoundRect(720 / 2 - 230 + 5, timeY + 10, 460, 70, 35, 'rgba(0,0,0,0.4)'); // fake shadow
-              drawRoundRect(720 / 2 - 230, timeY, 460, 70, 35, 'rgba(0,0,0,0.75)', 'rgba(255,255,255,0.25)');
-
-              // Bar
-              drawRoundRect(720 / 2 - 200, timeY + 24, 250, 22, 11, '#1f2937');
-
-              const currentMaxTime = (gamePoints || 0) >= 30 ? 3 : (gamePoints || 0) >= 15 ? 4 : 5;
-              const exW = Math.max(0, 250 * ((exerciseTime || 0) / currentMaxTime));
-
-              let barColor = '#fb923c';
-              if ((exerciseTime || 0) < 2) {
-                barColor = (Math.floor(Date.now() / 150) % 2 === 0) ? '#ef4444' : '#ffbaba';
-              }
-              ctx.fillStyle = barColor;
-
-              if (exW > 0) {
-                ctx.beginPath();
-                ctx.roundRect(720 / 2 - 200, timeY + 24, exW, 22, 11);
-                ctx.fill();
-              }
-              ctx.fillStyle = '#ffffff';
-              ctx.font = '900 36px sans-serif';
-              ctx.textAlign = 'right';
-              ctx.fillText(`${Math.ceil(exerciseTime || 0)}s`, 720 / 2 + 200, timeY + 48);
-            }
-
-            // Floating Points
-            if (floatingPoints && floatingPoints.length > 0) {
-              floatingPoints.forEach((fp, i) => {
-                ctx.textAlign = 'center';
-
-                let fpColor = '#ef4444';
-                let fpFont = '900 90px sans-serif';
-
-                if (fp.type === 'plus') {
-                  fpColor = '#4ade80';
-                } else if (fp.type === 'bonus') {
-                  fpColor = '#facc15';
-                  fpFont = '900 110px sans-serif';
-                }
-
-                // Fake Text Shadow
-                ctx.fillStyle = 'rgba(0,0,0,0.5)';
-                ctx.font = fpFont;
-                ctx.fillText(fp.text, 720 / 2 + 3, 1280 / 3 - (i * 70) + 5);
-
-                ctx.fillStyle = fpColor;
-                ctx.fillText(fp.text, 720 / 2, 1280 / 3 - (i * 70));
-              });
-            }
-          }
-
-          if (status === 'ending') {
-            // Dim background
-            ctx.fillStyle = 'rgba(0,0,0,0.7)';
-            ctx.fillRect(0, 0, canvasRef.current.width, canvasRef.current.height);
-
-            ctx.textAlign = 'center';
-            ctx.fillStyle = 'yellow';
-            // Try to render a big trophy Emoji
-            ctx.font = 'bold 120px sans-serif';
-            ctx.fillText('🏆', canvasRef.current.width / 2, canvasRef.current.height / 2 - 80);
-
-            ctx.fillStyle = '#facc15';
-            ctx.font = 'bold 80px sans-serif';
-            ctx.fillText(`SCORE: ${gamePoints}`, canvasRef.current.width / 2, canvasRef.current.height / 2 + 60);
-          }
+        } else {
+           // If mask is completely missing, draw the camera back on top as a fallback
+           ctx.save();
+           ctx.translate(TARGET_W, 0); ctx.scale(-1, 1);
+           ctx.drawImage(videoRef.current, offsetX, offsetY, drawW, drawH);
+           ctx.restore();
         }
       }
 
-      // 2. Process pose estimation without blocking the canvas rendering loop
-      const now = performance.now();
-      if (!isProcessingPose && (now - lastPoseTime > 33)) { // Limit to ~30 FPS
-        isProcessingPose = true;
-        lastPoseTime = now;
-        pose.send({ image: videoRef.current }).catch(console.error).finally(() => {
-          isProcessingPose = false;
-        });
+      // ── 3. HUD ───────────────────────────────────────────────────────────────
+      if (status === 'countdown') {
+        const cdValue = uiStateRef.current.countdownValue;
+        if (cdValue !== undefined && cdValue !== null) {
+          ctx.save();
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.font = 'italic 900 250px sans-serif';
+          
+          const text = cdValue > 0 ? cdValue.toString() : 'GO!';
+          const x = TARGET_W / 2;
+          const y = TARGET_H / 2;
+
+          // Outline
+          ctx.lineWidth = 15;
+          ctx.strokeStyle = '#06b6d4'; // cyan-500
+          ctx.strokeText(text, x, y);
+
+          // Fill
+          ctx.fillStyle = '#ffffff';
+          ctx.fillText(text, x, y);
+          
+          // Shadow/glow effect
+          ctx.shadowColor = 'rgba(0,0,0,0.8)';
+          ctx.shadowBlur = 20;
+          ctx.shadowOffsetX = 0;
+          ctx.shadowOffsetY = 10;
+          ctx.fillText(text, x, y);
+
+          ctx.restore();
+        }
+      }
+      if (status === 'playing') {
       }
 
-      // Loop
-      animationFrameId = requestAnimationFrame(processVideo);
+      if (status === 'ending') {
+        ctx.fillStyle = 'rgba(0,0,0,0.7)'; ctx.fillRect(0, 0, TARGET_W, TARGET_H);
+        ctx.textAlign = 'center'; ctx.font = 'bold 120px sans-serif';
+        ctx.fillText('🏆', TARGET_W / 2, TARGET_H / 2 - 80);
+        ctx.fillStyle = '#facc15'; ctx.font = 'bold 80px sans-serif';
+        ctx.fillText(`SCORE: ${gamePoints}`, TARGET_W / 2, TARGET_H / 2 + 60);
+      }
+
+      animFrameId = requestAnimationFrame(renderFrame);
     };
 
-    startCamera();
+    // ── Camera start ──────────────────────────────────────────────────────────
+    const startCamera = async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } }
+        });
+        if (!videoRef.current || !alive) return;
+        videoRef.current.srcObject = stream;
+        const onLoaded = () => {
+            videoRef.current?.play();
+
+            // Wait for background image before signaling ready
+            const checkReady = () => {
+              if (bgType === 'image' && !staticBgImgRef.current) {
+                setTimeout(checkReady, 100);
+                return;
+              }
+              if (onSystemReady) onSystemReady();
+            };
+            checkReady();
+
+            let lastPoseTime = -1;
+            let lastSegTime  = -1;
+
+            // ── Pose landmarks: per new video frame ──────────────────────────────
+            const runPose = (nowMs: number) => {
+              if (!alive || !videoRef.current || !poseLandmarker) return;
+              if (nowMs !== lastPoseTime) {
+                lastPoseTime = nowMs;
+                const result = poseLandmarker.detectForVideo(videoRef.current, nowMs);
+                if (result.landmarks?.[0]) {
+                  const lms = result.landmarks[0];
+                  const vW  = videoRef.current.videoWidth;
+                  const vH  = videoRef.current.videoHeight;
+                  const cW  = canvasRef.current?.clientWidth  || window.innerWidth;
+                  const cH  = canvasRef.current?.clientHeight || window.innerHeight;
+                  const sc  = Math.max(cW / vW, cH / vH);
+                  const dW  = vW * sc; const dH = vH * sc;
+                  const oX  = (cW - dW) / 2; const oY = (cH - dH) / 2;
+                  const mapped = lms.map((lm: any) => ({
+                    ...lm,
+                    x: (oX + lm.x * dW) / cW,
+                    y: (oY + lm.y * dH) / cH,
+                  }));
+                  onPoseDetectedRef.current(mapped);
+                }
+              }
+              if ('requestVideoFrameCallback' in videoRef.current!) {
+                (videoRef.current as any).requestVideoFrameCallback((_: any, m: any) => runPose(m.mediaTime * 1000));
+              }
+            };
+
+            // ── Segmentation: per new video frame (GPU-accelerated) ──────────────
+            const runSeg = (nowMs: number) => {
+              if (!alive || !videoRef.current || !imageSegmenter) return;
+              const { removeBackground } = uiStateRef.current;
+              if (removeBackground && nowMs !== lastSegTime) {
+                lastSegTime = nowMs;
+                imageSegmenter.segmentForVideo(videoRef.current, nowMs, (result) => {
+                  const confMask = result.confidenceMasks?.[0];
+                  if (confMask) {
+                    const w = confMask.width;
+                    const h = confMask.height;
+                    if (!segMaskDataRef.current) {
+                      segMaskDataRef.current = document.createElement('canvas');
+                    }
+                    const tc = segMaskDataRef.current;
+                    if (tc.width !== w || tc.height !== h) {
+                      tc.width = w; tc.height = h;
+                    }
+                    const tCtx = tc.getContext('2d')!;
+                    const imgData = tCtx.createImageData(w, h);
+                    
+                    try {
+                      const f32 = confMask.getAsFloat32Array();
+                      for (let i = 0; i < f32.length; i++) {
+                        let v = f32[i];
+                        if (v < 0.4) v = 0;
+                        else if (v > 0.7) v = 1;
+                        else v = (v - 0.4) / 0.3;
+                        
+                        const a = v * 255;
+                        const idx = i * 4;
+                        imgData.data[idx] = 255;
+                        imgData.data[idx+1] = 255;
+                        imgData.data[idx+2] = 255;
+                        imgData.data[idx+3] = a;
+                      }
+                      tCtx.putImageData(imgData, 0, 0);
+                    } catch (e) {
+                      console.warn('MPMask getAsFloat32Array error:', e);
+                    }
+                    
+                    confMask.close?.();
+                  }
+                });
+              }
+              if ('requestVideoFrameCallback' in videoRef.current!) {
+                (videoRef.current as any).requestVideoFrameCallback((_: any, m: any) => runSeg(m.mediaTime * 1000));
+              }
+            };
+
+            if ('requestVideoFrameCallback' in videoRef.current!) {
+              (videoRef.current as any).requestVideoFrameCallback((_: any, m: any) => {
+                runPose(m.mediaTime * 1000);
+                runSeg(m.mediaTime * 1000);
+              });
+            }
+
+            renderFrame();
+          };
+
+          if (videoRef.current.readyState >= 1) {
+            onLoaded();
+          } else {
+            videoRef.current.onloadedmetadata = onLoaded;
+          }
+      } catch (err) {
+        console.error('Camera error:', err);
+      }
+    };
+
+    initModels().catch(console.error);
 
     return () => {
-      isStreamActive = false;
-      if (animationFrameId) {
-        cancelAnimationFrame(animationFrameId);
+      alive = false;
+      cancelAnimationFrame(animFrameId);
+      if (videoRef.current?.srcObject) {
+        (videoRef.current.srcObject as MediaStream).getTracks().forEach(t => t.stop());
       }
-      if (videoRef.current && videoRef.current.srcObject) {
-        const stream = videoRef.current.srcObject as MediaStream;
-        stream.getTracks().forEach(track => track.stop());
-      }
-      pose.close();
+      poseLandmarker?.close();
+      imageSegmenter?.close();
     };
   }, [isReady]);
 
@@ -496,160 +507,78 @@ export default function PoseTracker({
     <div className="absolute inset-0 w-full h-full bg-black overflow-hidden">
       {!isReady && (
         <div className="absolute inset-0 bg-gray-900 flex flex-col items-center justify-center text-white z-10">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-green-500 mb-4"></div>
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-green-500 mb-4" />
           <p className="text-sm font-semibold">Loading AR Camera...</p>
         </div>
       )}
-      <video
-        ref={videoRef}
-        className="absolute top-0 left-0 w-0 h-0 opacity-0 pointer-events-none"
-        playsInline
-        autoPlay
-        muted
-      />
+      <video ref={videoRef} className="absolute top-0 left-0 w-0 h-0 opacity-0 pointer-events-none" playsInline autoPlay muted />
       {removeBackground && bgType === 'video' && bgVideoUrl && (
-        <video
-          ref={bgVideoRef}
-          src={bgVideoUrl}
+        <video ref={bgVideoRef} src={bgVideoUrl}
           className="absolute top-0 left-0 w-0 h-0 opacity-0 pointer-events-none"
-          playsInline
-          autoPlay
-          loop
-          muted
-          crossOrigin="anonymous"
-        />
+          playsInline autoPlay loop muted crossOrigin="anonymous" />
       )}
-      {/* Visible canvas for BOTH playing and recording */}
-      <canvas
-        ref={canvasRef}
-        className="absolute top-0 left-0 w-full h-full object-cover pointer-events-none"
-      />
+      <canvas ref={canvasRef} width={720} height={1280} className="absolute top-0 left-0 w-full h-full object-cover pointer-events-none" />
     </div>
   );
 }
 
-// Procedural Background Drawing Helpers
+// ── Background Drawing Helpers ──────────────────────────────────────────────────
 let gridOffset = 0;
 const drawNeonGridBg = (ctx: CanvasRenderingContext2D, w: number, h: number) => {
-  // Clear with dark purple/black gradient
-  const bgGrad = ctx.createLinearGradient(0, 0, 0, h);
-  bgGrad.addColorStop(0, '#0f051d');
-  bgGrad.addColorStop(1, '#05010a');
-  ctx.fillStyle = bgGrad;
-  ctx.fillRect(0, 0, w, h);
+  const g = ctx.createLinearGradient(0, 0, 0, h);
+  g.addColorStop(0, '#0f051d'); g.addColorStop(1, '#05010a');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, w, h);
 
-  // Draw perspective grid lines
-  ctx.strokeStyle = '#06b6d4'; // Cyan
-  ctx.lineWidth = 3;
-  
-  const horizonY = h * 0.45;
-  const numLines = 14;
-  
-  ctx.save();
-  ctx.shadowColor = '#06b6d4';
-  ctx.shadowBlur = 12;
-
-  // Vanishing lines
-  for (let i = 0; i <= numLines; i++) {
-    const xTop = (w / numLines) * i;
-    const xBottom = w / 2 + (xTop - w / 2) * 4; // Perspective spread
-    ctx.beginPath();
-    ctx.moveTo(xTop, horizonY);
-    ctx.lineTo(xBottom, h);
-    ctx.stroke();
+  const hz = h * 0.45;
+  ctx.save(); ctx.shadowColor = '#06b6d4'; ctx.shadowBlur = 12; ctx.strokeStyle = '#06b6d4'; ctx.lineWidth = 3;
+  for (let i = 0; i <= 14; i++) {
+    const xT = (w / 14) * i;
+    ctx.beginPath(); ctx.moveTo(xT, hz); ctx.lineTo(w / 2 + (xT - w / 2) * 4, h); ctx.stroke();
   }
-
-  // Receding horizontal lines
   gridOffset = (gridOffset + 3) % 40;
-  for (let y = horizonY; y < h; y += 40) {
-    const adjustedY = y + gridOffset;
-    const alpha = Math.min(1, (adjustedY - horizonY) / (h - horizonY));
-    ctx.strokeStyle = `rgba(6, 182, 212, ${alpha * 0.7})`;
-    ctx.beginPath();
-    ctx.moveTo(0, adjustedY);
-    ctx.lineTo(w, adjustedY);
-    ctx.stroke();
+  for (let y = hz; y < h; y += 40) {
+    const ay = y + gridOffset;
+    const alpha = Math.min(1, (ay - hz) / (h - hz));
+    ctx.strokeStyle = `rgba(6,182,212,${alpha * 0.7})`;
+    ctx.beginPath(); ctx.moveTo(0, ay); ctx.lineTo(w, ay); ctx.stroke();
   }
   ctx.restore();
-
-  // Draw floating cyber particles
-  const time = Date.now() * 0.001;
-  ctx.fillStyle = 'rgba(236, 72, 153, 0.6)'; // Neon pink
+  const t = Date.now() * 0.001;
+  ctx.fillStyle = 'rgba(236,72,153,0.6)';
   for (let i = 0; i < 12; i++) {
-    const px = (Math.sin(i * 123 + time) * 0.5 + 0.5) * w;
-    const py = horizonY + ((i * 59 + time * 60) % (h - horizonY));
-    const size = (1 - (py - horizonY) / (h - horizonY)) * 8 + 3;
-    ctx.beginPath();
-    ctx.arc(px, py, size, 0, Math.PI * 2);
-    ctx.fill();
+    const px = (Math.sin(i * 123 + t) * 0.5 + 0.5) * w;
+    const py = hz + ((i * 59 + t * 60) % (h - hz));
+    const sz = (1 - (py - hz) / (h - hz)) * 8 + 3;
+    ctx.beginPath(); ctx.arc(px, py, sz, 0, Math.PI * 2); ctx.fill();
   }
 };
 
 let synthwaveOffset = 0;
 const drawSynthwaveBg = (ctx: CanvasRenderingContext2D, w: number, h: number) => {
-  // Dark synthwave sunset sky
-  const skyGrad = ctx.createLinearGradient(0, 0, 0, h);
-  skyGrad.addColorStop(0, '#0d0221');
-  skyGrad.addColorStop(0.5, '#3b0d60');
-  skyGrad.addColorStop(1, '#02000a');
-  ctx.fillStyle = skyGrad;
-  ctx.fillRect(0, 0, w, h);
+  const g = ctx.createLinearGradient(0, 0, 0, h);
+  g.addColorStop(0, '#0d0221'); g.addColorStop(0.5, '#3b0d60'); g.addColorStop(1, '#02000a');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, w, h);
 
-  // Draw a big retro sun
-  const sunX = w / 2;
-  const sunY = h * 0.4;
-  const sunRadius = 130;
-
-  const sunGrad = ctx.createLinearGradient(0, sunY - sunRadius, 0, sunY + sunRadius);
-  sunGrad.addColorStop(0, '#facc15'); // Yellow
-  sunGrad.addColorStop(0.5, '#f43f5e'); // Rose
-  sunGrad.addColorStop(1, '#ec4899'); // Pink
-
-  ctx.save();
-  ctx.shadowColor = '#f43f5e';
-  ctx.shadowBlur = 35;
-  ctx.fillStyle = sunGrad;
-  ctx.beginPath();
-  ctx.arc(sunX, sunY, sunRadius, Math.PI, 0); // half sun
-  ctx.fill();
-  ctx.restore();
-
-  // Sun horizontal cuts
+  const sx = w / 2, sy = h * 0.4, sr = 130;
+  const sg = ctx.createLinearGradient(0, sy - sr, 0, sy + sr);
+  sg.addColorStop(0, '#facc15'); sg.addColorStop(0.5, '#f43f5e'); sg.addColorStop(1, '#ec4899');
+  ctx.save(); ctx.shadowColor = '#f43f5e'; ctx.shadowBlur = 35;
+  ctx.fillStyle = sg; ctx.beginPath(); ctx.arc(sx, sy, sr, Math.PI, 0); ctx.fill(); ctx.restore();
   ctx.fillStyle = '#0d0221';
-  for (let sy = sunY; sy < sunY + sunRadius; sy += 16) {
-    const thickness = Math.max(3, (sy - sunY) / 5);
-    ctx.fillRect(sunX - sunRadius - 10, sy, (sunRadius + 10) * 2, thickness);
-  }
+  for (let y = sy; y < sy + sr; y += 16) ctx.fillRect(sx - sr - 10, y, (sr + 10) * 2, Math.max(3, (y - sy) / 5));
 
-  // Draw synthwave grid
-  const horizonY = h * 0.5;
+  const hz = h * 0.5;
   synthwaveOffset = (synthwaveOffset + 4) % 50;
-
-  ctx.strokeStyle = '#ec4899'; // Pink
-  ctx.lineWidth = 2.5;
-  ctx.save();
-  ctx.shadowColor = '#ec4899';
-  ctx.shadowBlur = 10;
-
-  const numLines = 12;
-  for (let i = 0; i <= numLines; i++) {
-    const xTop = (w / numLines) * i;
-    const xBottom = w / 2 + (xTop - w / 2) * 5;
-    ctx.beginPath();
-    ctx.moveTo(xTop, horizonY);
-    ctx.lineTo(xBottom, h);
-    ctx.stroke();
+  ctx.save(); ctx.shadowColor = '#ec4899'; ctx.shadowBlur = 10; ctx.strokeStyle = '#ec4899'; ctx.lineWidth = 2.5;
+  for (let i = 0; i <= 12; i++) {
+    const xT = (w / 12) * i;
+    ctx.beginPath(); ctx.moveTo(xT, hz); ctx.lineTo(w / 2 + (xT - w / 2) * 5, h); ctx.stroke();
   }
-
-  // Receding horizontal lines
-  for (let py = horizonY; py < h; py += 35) {
-    const adjustedY = py + synthwaveOffset;
-    const alpha = Math.min(1, (adjustedY - horizonY) / (h - horizonY));
-    ctx.strokeStyle = `rgba(236, 72, 153, ${alpha})`;
-    ctx.beginPath();
-    ctx.moveTo(0, adjustedY);
-    ctx.lineTo(w, adjustedY);
-    ctx.stroke();
+  for (let y = hz; y < h; y += 35) {
+    const ay = y + synthwaveOffset;
+    const alpha = Math.min(1, (ay - hz) / (h - hz));
+    ctx.strokeStyle = `rgba(236,72,153,${alpha})`;
+    ctx.beginPath(); ctx.moveTo(0, ay); ctx.lineTo(w, ay); ctx.stroke();
   }
   ctx.restore();
 };
