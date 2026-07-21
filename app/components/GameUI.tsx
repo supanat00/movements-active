@@ -23,7 +23,12 @@ const VideoResult = ({ recordedVideoUrl, isProcessingVideo, onSave, onShare }: V
 
   React.useEffect(() => {
     if (recordedVideoUrl && videoRef.current) {
-      videoRef.current.play().catch(e => console.warn("Autoplay prevented:", e));
+      videoRef.current.load(); // Force the browser to reload the media element when src changes
+      
+      const playPromise = videoRef.current.play();
+      if (playPromise !== undefined) {
+        playPromise.catch(e => console.warn("[VideoResult] Autoplay prevented or error:", e));
+      }
     }
   }, [recordedVideoUrl]);
 
@@ -123,73 +128,7 @@ export default function GameUI({
         </div>
       )}
 
-      {/* HUD (Score, Logo, Time, Exercise Banner) */}
-      {(gameStatus === 'playing' || gameStatus === 'countdown') && (
-        <div className="absolute top-4 inset-x-0 px-4 z-50 pointer-events-none flex flex-col items-center animate-in fade-in slide-in-from-top-4 duration-500">
-          
-          {/* Top Row: Score | Logo | Time */}
-          <div className="flex w-full justify-between items-start">
-            
-            {/* Left: Score (Only visible during playing) */}
-            <div className="flex flex-col items-center w-24">
-              {gameStatus === 'playing' && (
-                <>
-                  <span className="text-white font-bold tracking-widest text-sm mb-1 drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)]">SCORE</span>
-                  <span className="text-[4.5rem] font-black italic text-white leading-none tracking-tighter" style={{ textShadow: '3px 3px 0 #003366, -1.5px -1.5px 0 #003366, 1.5px -1.5px 0 #003366, -1.5px 1.5px 0 #003366, 0 8px 16px rgba(0,0,0,0.5)' }}>
-                    {gamePoints}
-                  </span>
-                </>
-              )}
-            </div>
-
-            {/* Center: Logo */}
-            <div className="flex flex-col items-center shrink w-[45%] max-w-[200px] mx-2">
-              <img src="/logo.webp" alt="Logo" className="w-full drop-shadow-[0_4px_10px_rgba(255,255,255,0.3)] object-contain" />
-            </div>
-
-            {/* Right: Timer (Only visible during playing) */}
-            <div className="flex flex-col items-center w-28">
-              {gameStatus === 'playing' && (
-                <>
-                  <span className="text-white font-bold tracking-widest text-sm mb-1 drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)]">TIME</span>
-                  <div className="flex items-center space-x-0.5 drop-shadow-lg">
-                    <div className="w-8 h-12 bg-white/30 backdrop-blur-md rounded-md flex items-center justify-center border-[1.5px] border-white/50 shadow-[inset_0_2px_10px_rgba(255,255,255,0.4)]">
-                      <span className="text-white text-[2rem] font-bold leading-none mt-1">
-                        {Math.floor(Math.max(0, globalTime)).toString().padStart(2, '0')[0]}
-                      </span>
-                    </div>
-                    <div className="w-8 h-12 bg-white/30 backdrop-blur-md rounded-md flex items-center justify-center border-[1.5px] border-white/50 shadow-[inset_0_2px_10px_rgba(255,255,255,0.4)]">
-                      <span className="text-white text-[2rem] font-bold leading-none mt-1">
-                        {Math.floor(Math.max(0, globalTime)).toString().padStart(2, '0')[1]}
-                      </span>
-                    </div>
-                    <span className="text-white text-2xl font-bold mx-0.5 pb-1 drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)]">:</span>
-                    <div className="w-8 h-12 bg-white/30 backdrop-blur-md rounded-md flex items-center justify-center border-[1.5px] border-white/50 shadow-[inset_0_2px_10px_rgba(255,255,255,0.4)]">
-                      <span className="text-white text-[2rem] font-bold leading-none mt-1">
-                        {Math.floor(Math.max(0, (globalTime - Math.floor(globalTime)) * 100)).toString().padStart(2, '0')[0]}
-                      </span>
-                    </div>
-                    <div className="w-8 h-12 bg-white/30 backdrop-blur-md rounded-md flex items-center justify-center border-[1.5px] border-white/50 shadow-[inset_0_2px_10px_rgba(255,255,255,0.4)]">
-                      <span className="text-white text-[2rem] font-bold leading-none mt-1">
-                        {Math.floor(Math.max(0, (globalTime - Math.floor(globalTime)) * 100)).toString().padStart(2, '0')[1]}
-                      </span>
-                    </div>
-                  </div>
-                </>
-              )}
-            </div>
-            
-          </div>
-
-          {/* Exercise Banner (Below Logo) */}
-          <div className="mt-2 inline-flex px-5 py-1.5 bg-gradient-to-r from-blue-700/50 via-cyan-500/50 to-blue-700/50 backdrop-blur-md border-[1.5px] border-cyan-200/80 rounded-full shadow-[0_0_20px_rgba(6,182,212,0.6),inset_0_0_15px_rgba(255,255,255,0.4)] justify-center items-center">
-            <span className="text-[1.1rem] font-black italic text-white tracking-wide leading-none whitespace-nowrap" style={{ textShadow: '1.5px 1.5px 0 #003366, -1.5px -1.5px 0 #003366, 1.5px -1.5px 0 #003366, -1.5px 1.5px 0 #003366, 0 4px 6px rgba(0,0,0,0.5)' }}>
-              {currentExercise === 'jumping_jacks' ? 'กระโดดตบ' : currentExercise === 'squats' ? 'สควอช' : 'วิ่งเข่าสูง'} ให้มากที่สุด
-            </span>
-          </div>
-          
-        </div>
-      )}
+      {/* Playing HUD is rendered directly on Canvas so it is captured into the recorded video */}
 
       {/* Main Menu Overlay (Centered) */}
       {gameStatus === 'idle' && (

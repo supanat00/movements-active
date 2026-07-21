@@ -82,27 +82,45 @@ export default function PoseTracker({
   useEffect(() => {
     if (gameStatus === 'countdown' || gameStatus === 'playing') {
       if (canvasRef.current && !mediaRecorderRef.current) {
-        // Record directly from the CanvasCaptureMediaStream (30 FPS)
-        const stream = canvasRef.current.captureStream(30);
-        const audioStream = (window as any).gameAudioStream as MediaStream;
+        // Record from the Canvas
+        const videoStream = canvasRef.current.captureStream(30); // 30 FPS is usually more stable
+        const combinedStream = videoStream;
 
-        if (audioStream && audioStream.getAudioTracks().length > 0) {
-          audioStream.getAudioTracks().forEach(track => {
-            if (track.readyState === 'live') {
-              stream.addTrack(track);
-            }
-          });
+        const preferredMime = 'video/webm;codecs=vp8';
+        
+        let recorderOptions: MediaRecorderOptions | undefined;
+        if (typeof MediaRecorder !== 'undefined') {
+          if (MediaRecorder.isTypeSupported(preferredMime)) {
+            recorderOptions = { mimeType: preferredMime, videoBitsPerSecond: 3000000 };
+          } else if (MediaRecorder.isTypeSupported('video/webm')) {
+            recorderOptions = { mimeType: 'video/webm', videoBitsPerSecond: 3000000 };
+          } else if (MediaRecorder.isTypeSupported('video/mp4')) {
+            recorderOptions = { mimeType: 'video/mp4', videoBitsPerSecond: 3000000 };
+          }
         }
 
         try {
-          const recorder = new MediaRecorder(stream);
+          const recorder = recorderOptions ? new MediaRecorder(combinedStream, recorderOptions) : new MediaRecorder(combinedStream);
           mediaRecorderRef.current = recorder;
-          const activeMimeType = recorder.mimeType || 'video/webm';
+        } catch (e) {
+          try {
+            const recorder = new MediaRecorder(combinedStream);
+            mediaRecorderRef.current = recorder;
+          } catch (e2) {
+            console.error('[MediaRecorder] Fallback creation failed:', e2);
+          }
+        }
+
+        if (mediaRecorderRef.current) {
+          const recorder = mediaRecorderRef.current;
+          // Clean up mimeType (e.g. "video/webm;codecs=vp8,opus" -> "video/webm")
+          // This prevents the <video> element from throwing NotSupportedError
+          const activeMimeType = (recorder.mimeType || 'video/webm').split(';')[0];
 
           recordedChunksRef.current = [];
 
           recorder.ondataavailable = (event) => {
-            if (event.data.size > 0) {
+            if (event.data && event.data.size > 0) {
               recordedChunksRef.current.push(event.data);
             }
           };
@@ -120,9 +138,9 @@ export default function PoseTracker({
             recordedChunksRef.current = [];
           };
 
-          recorder.start(1000);
-        } catch (e) {
-          console.error('[MediaRecorder] Error creating instance:', e);
+          // Removing timeslice (1000) makes it fire one large chunk at the end, 
+          // which is much more reliable across different browsers.
+          recorder.start();
         }
       }
     } else if (gameStatus === 'preview' || gameStatus === 'win' || gameStatus === 'lose' || gameStatus === 'idle') {
@@ -355,6 +373,108 @@ export default function PoseTracker({
         }
       }
       if (status === 'playing') {
+        ctx.save();
+
+        // 1. Top Left: SCORE
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'alphabetic';
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 22px sans-serif';
+        ctx.shadowColor = 'rgba(0,0,0,0.8)';
+        ctx.shadowBlur = 4; ctx.shadowOffsetX = 0; ctx.shadowOffsetY = 2;
+        ctx.fillText('SCORE', 110, 55);
+
+        ctx.font = 'italic 900 80px sans-serif';
+        ctx.shadowColor = 'rgba(0,51,102,0.8)';
+        ctx.shadowBlur = 12; ctx.shadowOffsetX = 3; ctx.shadowOffsetY = 3;
+        ctx.fillText(`${gamePoints}`, 110, 130);
+
+        // 2. Top Center: LOGO
+        if (logoImgRef.current) {
+          const logoW = 180;
+          const logoH = (logoImgRef.current.height / logoImgRef.current.width) * logoW;
+          ctx.shadowColor = 'rgba(255,255,255,0.4)';
+          ctx.shadowBlur = 10; ctx.shadowOffsetX = 0; ctx.shadowOffsetY = 4;
+          ctx.drawImage(logoImgRef.current, (TARGET_W - logoW) / 2, 25, logoW, logoH);
+        }
+
+        // 3. Top Right: TIME (Glassmorphic digit boxes)
+        ctx.shadowColor = 'rgba(0,0,0,0.8)';
+        ctx.shadowBlur = 4; ctx.shadowOffsetX = 0; ctx.shadowOffsetY = 2;
+        ctx.font = 'bold 22px sans-serif';
+        ctx.fillText('TIME', TARGET_W - 110, 55);
+
+        const secVal = Math.floor(Math.max(0, globalTime));
+        const msVal = Math.floor(Math.max(0, (globalTime - secVal) * 100));
+        const sStr = secVal.toString().padStart(2, '0');
+        const msStr = msVal.toString().padStart(2, '0');
+        const digits = [sStr[0], sStr[1], ':', msStr[0], msStr[1]];
+
+        const startX = TARGET_W - 200;
+        const startY = 70;
+        let curX = startX;
+
+        digits.forEach((d) => {
+          if (d === ':') {
+            ctx.font = 'bold 32px sans-serif';
+            ctx.fillStyle = '#ffffff';
+            ctx.fillText(':', curX + 6, startY + 32);
+            curX += 14;
+          } else {
+            // Draw glass Box
+            ctx.fillStyle = 'rgba(255,255,255,0.25)';
+            ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.roundRect(curX, startY, 34, 46, 8);
+            ctx.fill();
+            ctx.stroke();
+
+            // Digit text
+            ctx.font = 'bold 30px sans-serif';
+            ctx.fillStyle = '#ffffff';
+            ctx.textAlign = 'center';
+            ctx.fillText(d, curX + 17, startY + 34);
+            curX += 40;
+          }
+        });
+
+        // 4. Exercise Banner (Below Logo)
+        const getExName = (ex?: string) => {
+          if (ex === 'squats') return 'สควอช';
+          if (ex === 'high_knees') return 'วิ่งเข่าสูง';
+          return 'กระโดดตบ';
+        };
+        const exBannerText = `${getExName(currentExercise)} ให้มากที่สุด`;
+        ctx.font = 'italic 900 24px sans-serif';
+        const textW = ctx.measureText(exBannerText).width;
+        const bannerW = textW + 50;
+        const bannerH = 46;
+        const bannerX = (TARGET_W - bannerW) / 2;
+        const bannerY = 120;
+
+        // Draw Pill Gradient Background
+        const pGrad = ctx.createLinearGradient(bannerX, 0, bannerX + bannerW, 0);
+        pGrad.addColorStop(0, 'rgba(29, 78, 216, 0.6)');
+        pGrad.addColorStop(0.5, 'rgba(6, 182, 212, 0.6)');
+        pGrad.addColorStop(1, 'rgba(29, 78, 216, 0.6)');
+        ctx.fillStyle = pGrad;
+        ctx.strokeStyle = 'rgba(165, 243, 252, 0.8)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.roundRect(bannerX, bannerY, bannerW, bannerH, 23);
+        ctx.fill();
+        ctx.stroke();
+
+        // Banner Text
+        ctx.fillStyle = '#ffffff';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.shadowColor = 'rgba(0,0,0,0.6)';
+        ctx.shadowBlur = 4;
+        ctx.fillText(exBannerText, TARGET_W / 2, bannerY + bannerH / 2);
+
+        ctx.restore();
       }
 
       if (status === 'ending') {
@@ -511,10 +631,10 @@ export default function PoseTracker({
           <p className="text-sm font-semibold">Loading AR Camera...</p>
         </div>
       )}
-      <video ref={videoRef} className="absolute top-0 left-0 w-0 h-0 opacity-0 pointer-events-none" playsInline autoPlay muted />
+      <video ref={videoRef} width={640} height={480} className="absolute top-0 left-0 w-1 h-1 opacity-0 pointer-events-none" playsInline autoPlay muted />
       {removeBackground && bgType === 'video' && bgVideoUrl && (
-        <video ref={bgVideoRef} src={bgVideoUrl}
-          className="absolute top-0 left-0 w-0 h-0 opacity-0 pointer-events-none"
+        <video ref={bgVideoRef} src={bgVideoUrl} width={640} height={480}
+          className="absolute top-0 left-0 w-1 h-1 opacity-0 pointer-events-none"
           playsInline autoPlay loop muted crossOrigin="anonymous" />
       )}
       <canvas ref={canvasRef} width={720} height={1280} className="absolute top-0 left-0 w-full h-full object-cover pointer-events-none" />

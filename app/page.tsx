@@ -125,32 +125,53 @@ export default function Home() {
       if (!ffmpegRef.current) await loadFfmpeg();
       const ffmpeg = ffmpegRef.current!;
       if (!ffmpeg.loaded) await loadFfmpeg();
+      
+      // Setup logging to debug if it fails
+      ffmpeg.on('log', ({ message }) => {
+        console.log('[FFmpeg]', message);
+      });
 
       await ffmpeg.writeFile("input.webm", await fetchFile(rawVideoBlob));
       
       const args = [
+        "-y", // overwrite output files
         "-i", "input.webm", 
         "-c:v", "libx264",
         "-preset", "ultrafast", 
-        "-crf", "22",
-        "-r", "60"
+        "-crf", "28", // Slightly lower quality for faster processing
+        "-r", "30" // 30fps is enough and matches captureStream
       ];
       
       if (resolution === '360p') {
-          args.push("-vf", "scale=360:640");
+          args.push("-vf", "scale=360:-2"); // Keep aspect ratio
+      } else {
+          args.push("-vf", "scale=720:-2");
       }
       
       args.push("output.mp4");
 
-      await ffmpeg.exec(args);
+      const ret = await ffmpeg.exec(args);
+      
+      if (ret !== 0) {
+        throw new Error(`FFmpeg exited with code ${ret}`);
+      }
       
       const data = await ffmpeg.readFile("output.mp4") as any;
       const url = URL.createObjectURL(new Blob([data.buffer], { type: "video/mp4" }));
+      
+      // Clean up FS
+      try {
+        await ffmpeg.deleteFile("input.webm");
+        await ffmpeg.deleteFile("output.mp4");
+      } catch (e) {
+        // ignore delete errors
+      }
       
       setProcessedVideoUrls(prev => ({ ...prev, [resolution]: url }));
       return url;
     } catch (err) {
       console.error("FFmpeg processing error:", err);
+      // Fallback to the raw video URL if processing fails
       return recordedVideoUrl;
     } finally {
       setIsProcessingVideo(false);
