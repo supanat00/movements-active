@@ -179,12 +179,33 @@ export default function Home() {
   };
 
   const handleSave = async (resolution: '360p' | '720p') => {
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+
+    // iOS: <a download> is not supported + FFmpeg WASM requires SharedArrayBuffer
+    // → use Web Share API with raw blob so user can "Save to Photos"
+    if (isIOS && rawVideoBlob) {
+      try {
+        const ext  = rawVideoBlob.type.includes('mp4') ? 'mp4' : 'mp4';
+        const file = new File([rawVideoBlob], `active-movement.${ext}`, { type: rawVideoBlob.type });
+        if (navigator.canShare?.({ files: [file] })) {
+          await navigator.share({ files: [file], title: 'Active Movement Workout! 🔥' });
+          return;
+        }
+      } catch (e: any) {
+        if (e?.name !== 'AbortError') console.warn('iOS share failed:', e);
+        return;
+      }
+    }
+
+    // Desktop / Android: FFmpeg re-encode → anchor download
     const url = await processVideoToMp4(resolution);
     if (url) {
       const a = document.createElement('a');
       a.href = url;
       a.download = `active-movement-${resolution}.mp4`;
+      document.body.appendChild(a);
       a.click();
+      document.body.removeChild(a);
     }
   };
 

@@ -36,6 +36,7 @@ export default function PoseTracker({
   const offscreenRef     = useRef<HTMLCanvasElement | null>(null);
   const maskCanvasRef    = useRef<HTMLCanvasElement | null>(null);
   const segMaskDataRef   = useRef<HTMLCanvasElement | null>(null); // holds the converted mask canvas
+  const imgDataRef       = useRef<ImageData | null>(null);         // reused ImageData (avoid GC churn)
 
   const onPoseDetectedRef      = useRef(onPoseDetected);
   const onRecordingCompleteRef = useRef(onRecordingComplete);
@@ -47,7 +48,8 @@ export default function PoseTracker({
   const mediaRecorderRef  = useRef<MediaRecorder | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
 
-  const [isReady, setIsReady] = useState(false);
+  const [isReady, setIsReady]       = useState(false);
+  const [cameraError, setCameraError] = useState<string | null>(null);
 
   useEffect(() => {
     onPoseDetectedRef.current      = onPoseDetected;
@@ -86,16 +88,18 @@ export default function PoseTracker({
         const videoStream = canvasRef.current.captureStream(30); // 30 FPS is usually more stable
         const combinedStream = videoStream;
 
-        const preferredMime = 'video/webm;codecs=vp8';
-        
+        // iOS-compatible MIME priority: mp4 first (iOS Safari), then webm (Chrome/Android)
+        const mimePriority = [
+          'video/mp4;codecs=avc1',
+          'video/mp4',
+          'video/webm;codecs=vp8',
+          'video/webm',
+        ];
         let recorderOptions: MediaRecorderOptions | undefined;
         if (typeof MediaRecorder !== 'undefined') {
-          if (MediaRecorder.isTypeSupported(preferredMime)) {
-            recorderOptions = { mimeType: preferredMime, videoBitsPerSecond: 3000000 };
-          } else if (MediaRecorder.isTypeSupported('video/webm')) {
-            recorderOptions = { mimeType: 'video/webm', videoBitsPerSecond: 3000000 };
-          } else if (MediaRecorder.isTypeSupported('video/mp4')) {
-            recorderOptions = { mimeType: 'video/mp4', videoBitsPerSecond: 3000000 };
+          const supportedMime = mimePriority.find(m => MediaRecorder.isTypeSupported(m));
+          if (supportedMime) {
+            recorderOptions = { mimeType: supportedMime, videoBitsPerSecond: 2500000 };
           }
         }
 
@@ -168,7 +172,7 @@ export default function PoseTracker({
     (async () => {
       try {
         const vision = await FilesetResolver.forVisionTasks(
-          'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm'
+          'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm'
         );
         if (!alive) return;
         setIsReady(true);
@@ -196,48 +200,66 @@ export default function PoseTracker({
     const MODEL_BASE = 'https://storage.googleapis.com/mediapipe-models';
 
     const initModels = async () => {
-      try {
-        // Init both in parallel — use CPU as fallback if GPU fails
-        const poseOptions = {
-          baseOptions: {
-            modelAssetPath: `${MODEL_BASE}/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task`,
-            delegate: 'GPU' as const,
-          },
-          runningMode: 'VIDEO' as const,
-          numPoses: 1,
-          minPoseDetectionConfidence: 0.5,
-          minPosePresenceConfidence: 0.5,
-          minTrackingConfidence: 0.5,
-          outputSegmentationMasks: false,
-        };
-        const segOptions = {
-          baseOptions: {
-            modelAssetPath: `${MODEL_BASE}/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.tflite`,
-            delegate: 'GPU' as const,
-          },
-          runningMode: 'VIDEO' as const,
-          outputCategoryMask: false,
-          outputConfidenceMasks: true,
-        };
+      // Low-spec detection: ≤2 CPU cores or ≤2 GB RAM → skip segmenter to save resources
+      const cores = navigator.hardwareConcurrency ?? 4;
+      const mem   = (navigator as any).deviceMemory ?? 4;
+      const isLowSpec = cores <= 2 || mem <= 2;
 
+      const poseOptions = {
+        baseOptions: {
+          modelAssetPath: `${MODEL_BASE}/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task`,
+          delegate: 'GPU' as const,
+        },
+        runningMode: 'VIDEO' as const,
+        numPoses: 1,
+        minPoseDetectionConfidence: 0.5,
+        minPosePresenceConfidence: 0.5,
+        minTrackingConfidence: 0.5,
+        outputSegmentationMasks: false,
+      };
+      const segOptions = {
+        baseOptions: {
+          modelAssetPath: `${MODEL_BASE}/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.tflite`,
+          delegate: 'GPU' as const,
+        },
+        runningMode: 'VIDEO' as const,
+        outputCategoryMask: false,
+        outputConfidenceMasks: true,
+      };
+
+      try {
+        // ── Load pose first (critical path) ─────────────────────────────────────
         try {
-          [poseLandmarker, imageSegmenter] = await Promise.all([
-            PoseLandmarker.createFromOptions(vision, poseOptions),
-            ImageSegmenter.createFromOptions(vision, segOptions),
-          ]);
-        } catch (gpuErr) {
-          console.warn('GPU delegate failed, falling back to CPU:', gpuErr);
-          [poseLandmarker, imageSegmenter] = await Promise.all([
-            PoseLandmarker.createFromOptions(vision, { ...poseOptions, baseOptions: { ...poseOptions.baseOptions, delegate: 'CPU' } }),
-            ImageSegmenter.createFromOptions(vision, { ...segOptions, baseOptions: { ...segOptions.baseOptions, delegate: 'CPU' } }),
-          ]);
+          poseLandmarker = await PoseLandmarker.createFromOptions(vision, poseOptions);
+        } catch {
+          poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
+            ...poseOptions,
+            baseOptions: { ...poseOptions.baseOptions, delegate: 'CPU' as const },
+          });
+        }
+
+        // ── Load segmenter only on non-low-spec devices (non-critical) ───────────
+        if (isLowSpec) {
+          console.info('[PoseTracker] Low-spec device — skipping segmenter');
+        } else {
+          try {
+            imageSegmenter = await ImageSegmenter.createFromOptions(vision, segOptions);
+          } catch {
+            try {
+              imageSegmenter = await ImageSegmenter.createFromOptions(vision, {
+                ...segOptions,
+                baseOptions: { ...segOptions.baseOptions, delegate: 'CPU' as const },
+              });
+            } catch {
+              console.warn('[PoseTracker] Segmenter unavailable — background removal disabled');
+            }
+          }
         }
 
         if (!alive) return;
         startCamera();
       } catch (err) {
         console.error('Model init failed:', err);
-        // Still start camera so user sees themselves even without segmentation
         if (alive) startCamera();
       }
     };
@@ -491,122 +513,151 @@ export default function PoseTracker({
     // ── Camera start ──────────────────────────────────────────────────────────
     const startCamera = async () => {
       try {
+        // Adaptive resolution: lower on mobile to reduce GPU/CPU load
+        const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
         const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } }
+          video: {
+            facingMode: 'user',
+            width:  { ideal: isMobile ? 480 : 1280 },
+            height: { ideal: isMobile ? 640 : 720  },
+          }
         });
         if (!videoRef.current || !alive) return;
         videoRef.current.srcObject = stream;
         const onLoaded = () => {
-            videoRef.current?.play();
+          videoRef.current?.play();
 
-            // Wait for background image before signaling ready
-            const checkReady = () => {
-              if (bgType === 'image' && !staticBgImgRef.current) {
-                setTimeout(checkReady, 100);
-                return;
-              }
-              if (onSystemReady) onSystemReady();
-            };
-            checkReady();
-
-            let lastPoseTime = -1;
-            let lastSegTime  = -1;
-
-            // ── Pose landmarks: per new video frame ──────────────────────────────
-            const runPose = (nowMs: number) => {
-              if (!alive || !videoRef.current || !poseLandmarker) return;
-              if (nowMs !== lastPoseTime) {
-                lastPoseTime = nowMs;
-                const result = poseLandmarker.detectForVideo(videoRef.current, nowMs);
-                if (result.landmarks?.[0]) {
-                  const lms = result.landmarks[0];
-                  const vW  = videoRef.current.videoWidth;
-                  const vH  = videoRef.current.videoHeight;
-                  const cW  = canvasRef.current?.clientWidth  || window.innerWidth;
-                  const cH  = canvasRef.current?.clientHeight || window.innerHeight;
-                  const sc  = Math.max(cW / vW, cH / vH);
-                  const dW  = vW * sc; const dH = vH * sc;
-                  const oX  = (cW - dW) / 2; const oY = (cH - dH) / 2;
-                  const mapped = lms.map((lm: any) => ({
-                    ...lm,
-                    x: (oX + lm.x * dW) / cW,
-                    y: (oY + lm.y * dH) / cH,
-                  }));
-                  onPoseDetectedRef.current(mapped);
-                }
-              }
-              if ('requestVideoFrameCallback' in videoRef.current!) {
-                (videoRef.current as any).requestVideoFrameCallback((_: any, m: any) => runPose(m.mediaTime * 1000));
-              }
-            };
-
-            // ── Segmentation: per new video frame (GPU-accelerated) ──────────────
-            const runSeg = (nowMs: number) => {
-              if (!alive || !videoRef.current || !imageSegmenter) return;
-              const { removeBackground } = uiStateRef.current;
-              if (removeBackground && nowMs !== lastSegTime) {
-                lastSegTime = nowMs;
-                imageSegmenter.segmentForVideo(videoRef.current, nowMs, (result) => {
-                  const confMask = result.confidenceMasks?.[0];
-                  if (confMask) {
-                    const w = confMask.width;
-                    const h = confMask.height;
-                    if (!segMaskDataRef.current) {
-                      segMaskDataRef.current = document.createElement('canvas');
-                    }
-                    const tc = segMaskDataRef.current;
-                    if (tc.width !== w || tc.height !== h) {
-                      tc.width = w; tc.height = h;
-                    }
-                    const tCtx = tc.getContext('2d')!;
-                    const imgData = tCtx.createImageData(w, h);
-                    
-                    try {
-                      const f32 = confMask.getAsFloat32Array();
-                      for (let i = 0; i < f32.length; i++) {
-                        let v = f32[i];
-                        if (v < 0.4) v = 0;
-                        else if (v > 0.7) v = 1;
-                        else v = (v - 0.4) / 0.3;
-                        
-                        const a = v * 255;
-                        const idx = i * 4;
-                        imgData.data[idx] = 255;
-                        imgData.data[idx+1] = 255;
-                        imgData.data[idx+2] = 255;
-                        imgData.data[idx+3] = a;
-                      }
-                      tCtx.putImageData(imgData, 0, 0);
-                    } catch (e) {
-                      console.warn('MPMask getAsFloat32Array error:', e);
-                    }
-                    
-                    confMask.close?.();
-                  }
-                });
-              }
-              if ('requestVideoFrameCallback' in videoRef.current!) {
-                (videoRef.current as any).requestVideoFrameCallback((_: any, m: any) => runSeg(m.mediaTime * 1000));
-              }
-            };
-
-            if ('requestVideoFrameCallback' in videoRef.current!) {
-              (videoRef.current as any).requestVideoFrameCallback((_: any, m: any) => {
-                runPose(m.mediaTime * 1000);
-                runSeg(m.mediaTime * 1000);
-              });
+          // Wait for background image before signaling ready
+          const checkReady = () => {
+            if (bgType === 'image' && !staticBgImgRef.current) {
+              setTimeout(checkReady, 100);
+              return;
             }
+            if (onSystemReady) onSystemReady();
+          };
+          checkReady();
 
-            renderFrame();
+          // ── Frame scheduling: rVFC where supported, rAF fallback for iOS ────────
+          // rVFC = requestVideoFrameCallback (not supported on iOS Safari)
+          const hasRVFC = 'requestVideoFrameCallback' in HTMLVideoElement.prototype;
+          let lastFrameTime = -1;
+          let segFrameCount = 0;
+
+          const runPose = (nowMs: number) => {
+            if (!alive || !videoRef.current || !poseLandmarker) return;
+            if (nowMs === lastFrameTime) return; // deduplicate
+            const result = poseLandmarker.detectForVideo(videoRef.current, nowMs);
+            if (result.landmarks?.[0]) {
+              const lms = result.landmarks[0];
+              const vW  = videoRef.current.videoWidth;
+              const vH  = videoRef.current.videoHeight;
+              const cW  = canvasRef.current?.clientWidth  || window.innerWidth;
+              const cH  = canvasRef.current?.clientHeight || window.innerHeight;
+              const sc  = Math.max(cW / vW, cH / vH);
+              const dW  = vW * sc; const dH = vH * sc;
+              const oX  = (cW - dW) / 2; const oY = (cH - dH) / 2;
+              const mapped = lms.map((lm: any) => ({
+                ...lm,
+                x: (oX + lm.x * dW) / cW,
+                y: (oY + lm.y * dH) / cH,
+              }));
+              onPoseDetectedRef.current(mapped);
+            }
           };
 
-          if (videoRef.current.readyState >= 1) {
-            onLoaded();
-          } else {
-            videoRef.current.onloadedmetadata = onLoaded;
-          }
-      } catch (err) {
+          const runSeg = (nowMs: number) => {
+            if (!alive || !videoRef.current || !imageSegmenter) return;
+            const { removeBackground } = uiStateRef.current;
+            if (!removeBackground) return;
+            imageSegmenter.segmentForVideo(videoRef.current, nowMs, (result) => {
+              const confMask = result.confidenceMasks?.[0];
+              if (confMask) {
+                const w = confMask.width;
+                const h = confMask.height;
+                if (!segMaskDataRef.current) segMaskDataRef.current = document.createElement('canvas');
+                const tc = segMaskDataRef.current;
+                if (tc.width !== w || tc.height !== h) { tc.width = w; tc.height = h; }
+                const tCtx = tc.getContext('2d')!;
+                // Reuse ImageData to avoid GC churn on every frame
+                if (!imgDataRef.current || imgDataRef.current.width !== w || imgDataRef.current.height !== h) {
+                  imgDataRef.current = tCtx.createImageData(w, h);
+                }
+                const imgData = imgDataRef.current;
+                try {
+                  const f32 = confMask.getAsFloat32Array();
+                  const buf = imgData.data;
+                  for (let i = 0; i < f32.length; i++) {
+                    let v = f32[i];
+                    // Wider feather zone (was 0.4–0.7 → now 0.15–0.85)
+                    // Keeps more edge pixels when standing far away or moving fast
+                    if (v < 0.15) v = 0;
+                    else if (v > 0.85) v = 1;
+                    else v = (v - 0.15) / 0.70;
+                    const idx = i * 4;
+                    buf[idx]     = 255;
+                    buf[idx + 1] = 255;
+                    buf[idx + 2] = 255;
+                    buf[idx + 3] = v * 255;
+                  }
+                  tCtx.putImageData(imgData, 0, 0);
+                } catch (e) {
+                  console.warn('MPMask error:', e);
+                }
+                confMask.close?.();
+              }
+            });
+          };
+
+          const runFrame = (nowMs: number) => {
+            if (!alive) return;
+            runPose(nowMs);
+            // Throttle segmentation: every 2 frames reduces load on mobile ~50%
+            segFrameCount++;
+            if (segFrameCount % 2 === 0) runSeg(nowMs);
+            lastFrameTime = nowMs;
+            scheduleFrame();
+          };
+
+          const scheduleFrame = () => {
+            if (!alive || !videoRef.current) return;
+            if (hasRVFC) {
+              (videoRef.current as any).requestVideoFrameCallback(
+                (_: any, m: any) => runFrame(m.mediaTime * 1000)
+              );
+            } else {
+              // iOS Safari / devices without rVFC: use requestAnimationFrame
+              requestAnimationFrame((ts) => {
+                if (!alive) return;
+                if (videoRef.current && videoRef.current.readyState >= 2) {
+                  runFrame(ts);
+                } else {
+                  scheduleFrame(); // video not ready yet, retry
+                }
+              });
+            }
+          };
+
+          scheduleFrame();
+          renderFrame();
+        };
+
+        if (videoRef.current.readyState >= 1) {
+          onLoaded();
+        } else {
+          videoRef.current.onloadedmetadata = onLoaded;
+        }
+      } catch (err: any) {
         console.error('Camera error:', err);
+        if (!alive) return;
+        let msg = 'กล้องไม่สามารถเปิดได้\nกรุณาลองใหม่';
+        if (err?.name === 'NotAllowedError' || err?.name === 'PermissionDeniedError') {
+          msg = 'กรุณาอนุญาตการใช้กล้อง\nในการตั้งค่าเบราว์เซอร์';
+        } else if (err?.name === 'NotFoundError') {
+          msg = 'ไม่พบกล้องในอุปกรณ์นี้';
+        } else if (err?.name === 'NotReadableError') {
+          msg = 'กล้องกำลังถูกใช้งานโดยแอปอื่น\nกรุณาปิดแอปอื่นก่อน';
+        }
+        setCameraError(msg);
       }
     };
 
@@ -625,10 +676,24 @@ export default function PoseTracker({
 
   return (
     <div className="absolute inset-0 w-full h-full bg-black overflow-hidden">
+      {/* Loading spinner */}
       {!isReady && (
         <div className="absolute inset-0 bg-gray-900 flex flex-col items-center justify-center text-white z-10">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-green-500 mb-4" />
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-cyan-500 mb-4" />
           <p className="text-sm font-semibold">Loading AR Camera...</p>
+        </div>
+      )}
+      {/* Camera error state */}
+      {cameraError && (
+        <div className="absolute inset-0 bg-gray-950 flex flex-col items-center justify-center text-white z-20 p-8">
+          <div className="text-6xl mb-5">📷</div>
+          <p className="text-center text-base font-semibold whitespace-pre-line leading-relaxed mb-6">{cameraError}</p>
+          <button
+            onClick={() => { setCameraError(null); window.location.reload(); }}
+            className="px-8 py-3 bg-cyan-500 hover:bg-cyan-400 text-white font-bold rounded-2xl active:scale-95 transition-transform text-base"
+          >
+            ลองใหม่อีกครั้ง
+          </button>
         </div>
       )}
       <video ref={videoRef} width={640} height={480} className="absolute top-0 left-0 w-1 h-1 opacity-0 pointer-events-none" playsInline autoPlay muted />
