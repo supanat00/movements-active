@@ -57,6 +57,9 @@ export default function PoseTracker({
   const segMaskDataRef   = useRef<HTMLCanvasElement | null>(null); // holds the converted mask canvas
   const imgDataRef       = useRef<ImageData | null>(null);         // reused ImageData (avoid GC churn)
   const hasValidSegMaskRef = useRef<boolean>(false);
+  const lastRawLandmarksRef = useRef<any[] | null>(null);
+  const bfsQueueRef         = useRef<Int32Array | null>(null);
+  const visitedRef          = useRef<Uint8Array | null>(null);
 
   const onPoseDetectedRef      = useRef(onPoseDetected);
   const onRecordingCompleteRef = useRef(onRecordingComplete);
@@ -220,7 +223,6 @@ export default function PoseTracker({
 
     let animFrameId: number;
     let alive = true;
-    let frameCount = 0;
     
     const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
     const FRAME_MS = isMobile ? 33 : 0; // ~30fps throttle on mobile for performance
@@ -229,8 +231,8 @@ export default function PoseTracker({
     // Performance Throttling Settings
     let lastPoseRunTime = 0;
     let lastSegRunTime = 0;
-    const POSE_THROTTLE_MS = isMobile ? 33 : 0;  // 30 FPS on mobile, run every frame on desktop
-    const SEG_THROTTLE_MS = isMobile ? 120 : 0;  // 8 FPS on mobile (CPU), run every frame on desktop (GPU)
+    const poseThrottleMs = isMobile ? 33 : 0;  // 30 FPS on mobile, run every frame on desktop
+    let segThrottleMs = isMobile ? 120 : 0;  // Start conservative, will update dynamically
 
     const MODEL_BASE = 'https://storage.googleapis.com/mediapipe-models';
 
@@ -271,35 +273,35 @@ export default function PoseTracker({
       try {
         let stream: MediaStream | null = null;
         
-        // Try 1: Portrait 720x1280 (Native Portrait HD)
+        // Try 1: Standard HD (1280x720)
         stream = await tryMediaDevices({
           video: {
             facingMode: 'user',
-            width: { ideal: 720 },
-            height: { ideal: 1280 },
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
             frameRate: { ideal: 30 }
           }
         });
         
-        // Try 2: Portrait 480x640 (Native Portrait SD)
+        // Try 2: Full HD (1920x1080)
         if (!stream) {
           stream = await tryMediaDevices({
             video: {
               facingMode: 'user',
-              width: { ideal: 480 },
-              height: { ideal: 640 },
+              width: { ideal: 1920 },
+              height: { ideal: 1080 },
               frameRate: { ideal: 30 }
             }
           });
         }
         
-        // Try 3: High-Res Portrait 1080x1920
+        // Try 3: Standard SD (640x480)
         if (!stream) {
           stream = await tryMediaDevices({
             video: {
               facingMode: 'user',
-              width: { ideal: 1080 },
-              height: { ideal: 1920 },
+              width: { ideal: 640 },
+              height: { ideal: 480 },
               frameRate: { ideal: 30 }
             }
           });
@@ -395,38 +397,30 @@ export default function PoseTracker({
       setLoadProgress(70);
 
       // ── 3. Load optional ImageSegmenter in background (non-blocking) ──
-      // Force CPU delegate on mobile for 100% reliable execution (bypasses WebGL texture bugs)
-      const useCpuForSeg = isMobile;
-      const segOptsWithDelegate = useCpuForSeg
-        ? { ...segOptions, baseOptions: { ...segOptions.baseOptions, delegate: 'CPU' as const } }
-        : segOptions;
-
-      const segLoader = useCpuForSeg
-        ? ImageSegmenter.createFromOptions(visionObj, segOptsWithDelegate).then(instance => ({ instance, delegate: 'CPU' as const }))
-        : createAutoModel(segOptions, (opts) => ImageSegmenter.createFromOptions(visionObj, opts), 'ImageSegmenter');
+      // Attempts GPU delegate first and falls back to CPU automatically if unsupported
+      const segLoader = createAutoModel(segOptions, (opts) => ImageSegmenter.createFromOptions(visionObj, opts), 'ImageSegmenter');
 
       segLoader.then(res => {
         if (!alive) return;
         imageSegmenter = res.instance;
         segDelegate    = res.delegate;
-        console.info(`[PoseTracker] ImageSegmenter ready in background (${res.delegate})`);
+        
+        // Dynamically adjust throttling speed depending on the active delegate:
+        if (res.delegate === 'GPU') {
+          segThrottleMs = isMobile ? 33 : 0; // GPU is extremely fast, run at 30/60 FPS
+        } else {
+          segThrottleMs = isMobile ? 100 : 50; // CPU is slower, throttle to keep UI thread responsive
+        }
+        
+        console.info(`[PoseTracker] ImageSegmenter ready in background (${res.delegate}) - Throttle: ${segThrottleMs}ms`);
       }).catch(e => {
         console.warn('[PoseTracker] ImageSegmenter background load failed:', e);
       });
     };
 
-    // ── Helper to calculate scale and offset with a zoom limit ───────────
+    // ── Helper to calculate scale and offset to cover the screen ─────────
     const getScaleParams = (vW: number, vH: number, targetW: number, targetH: number) => {
-      let scale = Math.max(targetW / vW, targetH / vH);
-      
-      // Cap scale for landscape streams drawn on portrait canvas to avoid excessive digital zoom
-      if (vW > vH && targetH > targetW) {
-        const maxAllowedScale = (targetW / vW) * 1.4;
-        if (scale > maxAllowedScale) {
-          scale = maxAllowedScale;
-        }
-      }
-      
+      const scale = Math.max(targetW / vW, targetH / vH);
       const drawW   = vW * scale;
       const drawH   = vH * scale;
       const offsetX = (targetW - drawW) / 2;
@@ -441,6 +435,8 @@ export default function PoseTracker({
         const result = poseLandmarker.detectForVideo(videoRef.current, nowMs);
         if (result.landmarks?.[0]) {
           const lms = result.landmarks[0];
+          lastRawLandmarksRef.current = lms; // Store raw landmarks for segmenter seeds
+          
           const vW  = videoRef.current.videoWidth;
           const vH  = videoRef.current.videoHeight;
           const cW  = canvasRef.current?.clientWidth  || window.innerWidth;
@@ -486,15 +482,95 @@ export default function PoseTracker({
               } else {
                 maskBytes = (categoryMask as any).getAsFloat32Array();
               }
+
+              const size = w * h;
+              // Re-use BFS buffers (avoid GC allocations)
+              if (!bfsQueueRef.current || bfsQueueRef.current.length < size) {
+                bfsQueueRef.current = new Int32Array(size);
+              }
+              if (!visitedRef.current || visitedRef.current.length < size) {
+                visitedRef.current = new Uint8Array(size);
+              }
+
+              const queue = bfsQueueRef.current;
+              const visited = visitedRef.current;
+              visited.fill(0);
+
+              let head = 0;
+              let tail = 0;
+
+              // Seed with coordinates of player's main body parts
+              if (lastRawLandmarksRef.current) {
+                const lms = lastRawLandmarksRef.current;
+                const seedIndices = [0, 11, 12, 13, 14, 23, 24, 25, 26]; // Torso, head, arms, legs
+                for (const idx of seedIndices) {
+                  const lm = lms[idx];
+                  if (lm && lm.visibility > 0.5) {
+                    const sx = Math.floor(lm.x * w);
+                    const sy = Math.floor(lm.y * h);
+                    if (sx >= 0 && sx < w && sy >= 0 && sy < h) {
+                      const pixelIdx = sy * w + sx;
+                      if (maskBytes[pixelIdx] < 0.5 && visited[pixelIdx] === 0) {
+                        visited[pixelIdx] = 1;
+                        queue[tail++] = pixelIdx;
+                      }
+                    }
+                  }
+                }
+              }
+
+              // Run BFS to extract only the connected component of the main player
+              if (tail > 0) {
+                while (head < tail) {
+                  const curr = queue[head++];
+                  const cx = curr % w;
+                  const cy = Math.floor(curr / w);
+
+                  // Left
+                  if (cx > 0) {
+                    const n = curr - 1;
+                    if (visited[n] === 0 && maskBytes[n] < 0.5) {
+                      visited[n] = 1;
+                      queue[tail++] = n;
+                    }
+                  }
+                  // Right
+                  if (cx < w - 1) {
+                    const n = curr + 1;
+                    if (visited[n] === 0 && maskBytes[n] < 0.5) {
+                      visited[n] = 1;
+                      queue[tail++] = n;
+                    }
+                  }
+                  // Up
+                  if (cy > 0) {
+                    const n = curr - w;
+                    if (visited[n] === 0 && maskBytes[n] < 0.5) {
+                      visited[n] = 1;
+                      queue[tail++] = n;
+                    }
+                  }
+                  // Down
+                  if (cy < h - 1) {
+                    const n = curr + w;
+                    if (visited[n] === 0 && maskBytes[n] < 0.5) {
+                      visited[n] = 1;
+                      queue[tail++] = n;
+                    }
+                  }
+                }
+              }
+
               const buf32 = new Uint32Array(imgData.data.buffer);
               let personPixels = 0;
-              for (let i = 0; i < maskBytes.length; i++) {
-                const isPerson = maskBytes[i] < 0.5;
-                if (isPerson) personPixels++;
-                // 0xffffffff is white (RGBA 255, 255, 255, 255) in little-endian systems
-                // 0x00000000 is transparent
-                buf32[i] = isPerson ? 0xffffffff : 0x00000000;
+              for (let i = 0; i < size; i++) {
+                // If tail is 0 (landmarks not detected yet), fallback to original category mask 
+                // so the user is drawn before landmarks capture onto the body.
+                const isMainPerson = tail > 0 ? (visited[i] === 1) : (maskBytes[i] < 0.5);
+                if (isMainPerson) personPixels++;
+                buf32[i] = isMainPerson ? 0xffffffff : 0x00000000;
               }
+
               tCtx.putImageData(imgData, 0, 0);
               hasValidSegMaskRef.current = personPixels > 10;
             } catch (e) {
@@ -540,27 +616,16 @@ export default function PoseTracker({
         const now = performance.now();
         const { removeBackground } = uiStateRef.current;
 
-        // Stagger Pose detection and Segmentation to run on alternate frames.
-        // This prevents CPU/GPU bottlenecks by never running both deep learning models in the same animation frame.
-        if (removeBackground) {
-          frameCount++;
-          if (frameCount % 2 === 0) {
-            if (now - lastPoseRunTime >= POSE_THROTTLE_MS) {
-              runPose(timestamp);
-              lastPoseRunTime = now;
-            }
-          } else {
-            if (now - lastSegRunTime >= SEG_THROTTLE_MS) {
-              runSeg(timestamp);
-              lastSegRunTime = now;
-            }
-          }
-        } else {
-          // If background removal is disabled, only pose tracking is needed, run it directly
-          if (now - lastPoseRunTime >= POSE_THROTTLE_MS) {
-            runPose(timestamp);
-            lastPoseRunTime = now;
-          }
+        // Run Pose detection independently on every render frame (subject to its throttle)
+        if (now - lastPoseRunTime >= poseThrottleMs) {
+          runPose(timestamp);
+          lastPoseRunTime = now;
+        }
+
+        // Run Segmentation independently (subject to its delegate-based throttle)
+        if (removeBackground && (now - lastSegRunTime >= segThrottleMs)) {
+          runSeg(timestamp);
+          lastSegRunTime = now;
         }
 
         const { drawW, drawH, offsetX, offsetY } = getScaleParams(vW, vH, TARGET_W, TARGET_H);
