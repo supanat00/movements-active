@@ -48,8 +48,10 @@ export default function PoseTracker({
   const mediaRecorderRef  = useRef<MediaRecorder | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
 
-  const [isReady, setIsReady]       = useState(false);
-  const [cameraError, setCameraError] = useState<string | null>(null);
+  const [isReady, setIsReady]           = useState(false);
+  const [cameraError, setCameraError]   = useState<string | null>(null);
+  const [loadProgress, setLoadProgress] = useState(0);
+  const [loadStatus,   setLoadStatus]   = useState('กำลังเชื่อมต่อระบบ AI...');
 
   useEffect(() => {
     onPoseDetectedRef.current      = onPoseDetected;
@@ -169,12 +171,16 @@ export default function PoseTracker({
   // ── Init tasks-vision models ──────────────────────────────────────────────
   useEffect(() => {
     let alive = true;
+    setLoadProgress(5);
+    setLoadStatus('กำลังโหลด AI Runtime...');
     (async () => {
       try {
         const vision = await FilesetResolver.forVisionTasks(
           'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm'
         );
         if (!alive) return;
+        setLoadProgress(20);
+        setLoadStatus('กำลังโหลดโมเดล AI...');
         setIsReady(true);
         // Store resolvers in window for main effect
         (window as any).__visionFileset = vision;
@@ -229,6 +235,7 @@ export default function PoseTracker({
 
       try {
         // ── Load pose first (critical path) ─────────────────────────────────────
+        setLoadStatus('กำลังโหลดระบบตรวจจับท่าทาง...');
         try {
           poseLandmarker = await PoseLandmarker.createFromOptions(vision, poseOptions);
         } catch {
@@ -237,11 +244,15 @@ export default function PoseTracker({
             baseOptions: { ...poseOptions.baseOptions, delegate: 'CPU' as const },
           });
         }
+        if (!alive) return;
+        setLoadProgress(55);
 
         // ── Load segmenter only on non-low-spec devices (non-critical) ───────────
         if (isLowSpec) {
           console.info('[PoseTracker] Low-spec device — skipping segmenter');
+          setLoadProgress(80);
         } else {
+          setLoadStatus('กำลังโหลดระบบตัดพื้นหลัง...');
           try {
             imageSegmenter = await ImageSegmenter.createFromOptions(vision, segOptions);
           } catch {
@@ -254,13 +265,17 @@ export default function PoseTracker({
               console.warn('[PoseTracker] Segmenter unavailable — background removal disabled');
             }
           }
+          if (!alive) return;
+          setLoadProgress(80);
         }
 
+        setLoadProgress(90);
+        setLoadStatus('กำลังเปิดกล้อง...');
         if (!alive) return;
         startCamera();
       } catch (err) {
         console.error('Model init failed:', err);
-        if (alive) startCamera();
+        if (alive) { setLoadProgress(90); setLoadStatus('กำลังเปิดกล้อง...'); startCamera(); }
       }
     };
 
@@ -527,12 +542,17 @@ export default function PoseTracker({
         const onLoaded = () => {
           videoRef.current?.play();
 
+          setLoadProgress(95);
+          setLoadStatus('กำลังเริ่มต้นระบบ...');
+
           // Wait for background image before signaling ready
           const checkReady = () => {
             if (bgType === 'image' && !staticBgImgRef.current) {
               setTimeout(checkReady, 100);
               return;
             }
+            setLoadProgress(100);
+            setLoadStatus('พร้อมแล้ว!');
             if (onSystemReady) onSystemReady();
           };
           checkReady();
@@ -676,11 +696,47 @@ export default function PoseTracker({
 
   return (
     <div className="absolute inset-0 w-full h-full bg-black overflow-hidden">
-      {/* Loading spinner */}
-      {!isReady && (
-        <div className="absolute inset-0 bg-gray-900 flex flex-col items-center justify-center text-white z-10">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-cyan-500 mb-4" />
-          <p className="text-sm font-semibold">Loading AR Camera...</p>
+      {/* Preloading overlay — shown until 100% */}
+      {loadProgress < 100 && !cameraError && (
+        <div
+          className="absolute inset-0 z-30 flex flex-col items-center justify-center px-10"
+          style={{ background: 'linear-gradient(160deg, #0a0a1a 0%, #0d1b2a 50%, #0a0a1a 100%)' }}
+        >
+          {/* Animated glow orb */}
+          <div className="relative mb-8">
+            <div
+              className="absolute inset-0 rounded-full blur-2xl opacity-40 animate-pulse"
+              style={{ background: 'radial-gradient(circle, #06b6d4, #3b82f6)', transform: 'scale(1.6)' }}
+            />
+            <img
+              src="/logo.webp"
+              alt="Logo"
+              className="relative w-36 object-contain drop-shadow-lg"
+              onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+            />
+          </div>
+
+          {/* Progress bar */}
+          <div className="w-full max-w-[260px]">
+            <div className="flex justify-between items-center mb-2">
+              <p className="text-white/60 text-xs font-medium tracking-wide">{loadStatus}</p>
+              <p className="text-cyan-400 text-xs font-bold tabular-nums">{loadProgress}%</p>
+            </div>
+            <div className="w-full h-1.5 bg-white/10 rounded-full overflow-hidden">
+              <div
+                className="h-full rounded-full transition-all duration-700 ease-out"
+                style={{
+                  width: `${loadProgress}%`,
+                  background: 'linear-gradient(90deg, #06b6d4, #3b82f6, #8b5cf6)',
+                }}
+              />
+            </div>
+          </div>
+
+          {/* Tip text */}
+          <p className="mt-8 text-white/25 text-[11px] text-center leading-relaxed">
+            ยืนห่างจากกล้อง 1.5–2 เมตร<br />ให้เห็นร่างกายเต็มตัว
+          </p>
         </div>
       )}
       {/* Camera error state */}
