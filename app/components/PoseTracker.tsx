@@ -220,6 +220,12 @@ export default function PoseTracker({
 
     let animFrameId: number;
     let alive = true;
+    let frameCount = 0;
+    
+    // Debug variables
+    let lastFpsTime = 0;
+    let fpsCount = 0;
+    let currentFps = 0;
 
     const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
     const FRAME_MS = isMobile ? 33 : 0; // ~30fps throttle on mobile for performance
@@ -346,14 +352,7 @@ export default function PoseTracker({
       setLoadProgress(70);
 
       // ── 3. Load optional ImageSegmenter in background (non-blocking) ──
-      const useCpuForSeg = isMobile;
-      const segOptsWithDelegate = useCpuForSeg
-        ? { ...segOptions, baseOptions: { ...segOptions.baseOptions, delegate: 'CPU' as const } }
-        : segOptions;
-
-      const segLoader = useCpuForSeg
-        ? ImageSegmenter.createFromOptions(visionObj, segOptsWithDelegate).then(instance => ({ instance, delegate: 'CPU' as const }))
-        : createAutoModel(segOptions, (opts) => ImageSegmenter.createFromOptions(visionObj, opts), 'ImageSegmenter');
+      const segLoader = createAutoModel(segOptions, (opts) => ImageSegmenter.createFromOptions(visionObj, opts), 'ImageSegmenter');
 
       segLoader.then(res => {
         if (!alive) return;
@@ -470,18 +469,29 @@ export default function PoseTracker({
       const vH = videoRef.current.videoHeight;
       if (vW > 0 && vH > 0 && videoRef.current.readyState >= 2) {
         const now = performance.now();
-
-        // Throttled Pose Detection
-        if (now - lastPoseRunTime >= POSE_THROTTLE_MS) {
-          runPose(timestamp);
-          lastPoseRunTime = now;
-        }
-
-        // Throttled Segmentation
         const { removeBackground } = uiStateRef.current;
-        if (removeBackground && now - lastSegRunTime >= SEG_THROTTLE_MS) {
-          runSeg(timestamp);
-          lastSegRunTime = now;
+
+        // Stagger Pose detection and Segmentation to run on alternate frames.
+        // This prevents CPU/GPU bottlenecks by never running both deep learning models in the same animation frame.
+        if (removeBackground) {
+          frameCount++;
+          if (frameCount % 2 === 0) {
+            if (now - lastPoseRunTime >= POSE_THROTTLE_MS) {
+              runPose(timestamp);
+              lastPoseRunTime = now;
+            }
+          } else {
+            if (now - lastSegRunTime >= SEG_THROTTLE_MS) {
+              runSeg(timestamp);
+              lastSegRunTime = now;
+            }
+          }
+        } else {
+          // If background removal is disabled, only pose tracking is needed, run it directly
+          if (now - lastPoseRunTime >= POSE_THROTTLE_MS) {
+            runPose(timestamp);
+            lastPoseRunTime = now;
+          }
         }
 
         const scale   = Math.max(TARGET_W / vW, TARGET_H / vH);
@@ -642,6 +652,34 @@ export default function PoseTracker({
           ctx.fillText('🏆', TARGET_W / 2, TARGET_H / 2 - 80);
           ctx.fillStyle = '#facc15'; ctx.font = 'bold 80px sans-serif';
           ctx.fillText(`SCORE: ${gamePoints}`, TARGET_W / 2, TARGET_H / 2 + 60);
+        }
+
+        // ── 4. Debug / FPS Overlay ───────────────────────────────────────
+        // Calculate rendering frame rate
+        fpsCount++;
+        const nowMs = performance.now();
+        if (nowMs - lastFpsTime >= 1000) {
+          currentFps = fpsCount;
+          fpsCount = 0;
+          lastFpsTime = nowMs;
+        }
+
+        // Draw debug overlay when not actively playing/countdown (to keep HUD clean)
+        if (status !== 'playing' && status !== 'countdown') {
+          ctx.save();
+          ctx.fillStyle = 'rgba(0,0,0,0.7)';
+          ctx.fillRect(20, TARGET_H - 130, 280, 100);
+          ctx.strokeStyle = 'rgba(255,255,255,0.2)';
+          ctx.lineWidth = 1.5;
+          ctx.strokeRect(20, TARGET_H - 130, 280, 100);
+          
+          ctx.fillStyle = '#ffffff';
+          ctx.font = 'bold 13px monospace';
+          ctx.fillText(`FPS: ${currentFps}`, 30, TARGET_H - 110);
+          ctx.fillText(`Cam Stream: ${vW}x${vH}`, 30, TARGET_H - 92);
+          ctx.fillText(`Drawing Canvas: ${TARGET_W}x${TARGET_H}`, 30, TARGET_H - 74);
+          ctx.fillText(`AI: Pose(${poseDelegate}) | Seg(${segDelegate})`, 30, TARGET_H - 56);
+          ctx.restore();
         }
       }
 

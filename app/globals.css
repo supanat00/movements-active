@@ -29,6 +29,8 @@ body {
   width: 100vw;
   height: 100dvh;
   max-width: 56.25dvh; /* 100dvh * 9/16 = 56.25dvh */
+  max-height: 177.78vw; /* 100vw * 16/9 = 177.78vw */
+  aspect-ratio: 9 / 16;
   position: relative;
   background-color: black;
   overflow: hidden;
