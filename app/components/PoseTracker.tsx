@@ -472,12 +472,7 @@ export default function PoseTracker({
           runSeg(timestamp);
         }
 
-        let scale = Math.max(TARGET_W / vW, TARGET_H / vH);
-        if (isMobile) {
-          // Clamp mobile zoom to prevent excessive cropping of the body
-          const fitWidthScale = TARGET_W / vW;
-          scale = Math.min(scale, fitWidthScale * 1.12);
-        }
+        const scale   = Math.max(TARGET_W / vW, TARGET_H / vH);
         const drawW   = vW * scale;
         const drawH   = vH * scale;
         const offsetX = (TARGET_W - drawW) / 2;
@@ -649,6 +644,7 @@ export default function PoseTracker({
             facingMode: 'user',
             width:  isMobile ? { ideal: 1080 } : { ideal: 1920 },
             height: isMobile ? { ideal: 1920 } : { ideal: 1080  },
+            aspectRatio: isMobile ? { ideal: 9/16 } : { ideal: 16/9 },
             frameRate: { ideal: 30 }
           }
         });
