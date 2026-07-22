@@ -364,6 +364,25 @@ export default function PoseTracker({
       });
     };
 
+    // ── Helper to calculate scale and offset with a zoom limit ───────────
+    const getScaleParams = (vW: number, vH: number, targetW: number, targetH: number) => {
+      let scale = Math.max(targetW / vW, targetH / vH);
+      
+      // Cap scale for landscape streams drawn on portrait canvas to avoid excessive digital zoom
+      if (vW > vH && targetH > targetW) {
+        const maxAllowedScale = (targetW / vW) * 1.5;
+        if (scale > maxAllowedScale) {
+          scale = maxAllowedScale;
+        }
+      }
+      
+      const drawW   = vW * scale;
+      const drawH   = vH * scale;
+      const offsetX = (targetW - drawW) / 2;
+      const offsetY = (targetH - drawH) / 2;
+      return { scale, drawW, drawH, offsetX, offsetY };
+    };
+
     // ── Helper functions for AI execution ──────────────────────────────
     const runPose = (nowMs: number) => {
       if (!alive || !videoRef.current || !poseLandmarker) return;
@@ -375,9 +394,8 @@ export default function PoseTracker({
           const vH  = videoRef.current.videoHeight;
           const cW  = canvasRef.current?.clientWidth  || window.innerWidth;
           const cH  = canvasRef.current?.clientHeight || window.innerHeight;
-          const sc  = Math.max(cW / vW, cH / vH);
-          const dW  = vW * sc; const dH = vH * sc;
-          const oX  = (cW - dW) / 2; const oY = (cH - dH) / 2;
+          
+          const { drawW: dW, drawH: dH, offsetX: oX, offsetY: oY } = getScaleParams(vW, vH, cW, cH);
 
           // Use cH as the common divisor for both x and y to maintain 1:1 aspect ratio (undistorted)
           const mapped = lms.map((lm: any) => ({
@@ -494,11 +512,7 @@ export default function PoseTracker({
           }
         }
 
-        const scale   = Math.max(TARGET_W / vW, TARGET_H / vH);
-        const drawW   = vW * scale;
-        const drawH   = vH * scale;
-        const offsetX = (TARGET_W - drawW) / 2;
-        const offsetY = (TARGET_H - drawH) / 2;
+        const { drawW, drawH, offsetX, offsetY } = getScaleParams(vW, vH, TARGET_W, TARGET_H);
 
         const { gamePoints, globalTime, currentExercise, countdownValue, gameStatus: status, bgType } = uiStateRef.current;
 
