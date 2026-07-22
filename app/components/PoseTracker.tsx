@@ -472,7 +472,12 @@ export default function PoseTracker({
           runSeg(timestamp);
         }
 
-        const scale   = Math.max(TARGET_W / vW, TARGET_H / vH);
+        let scale = Math.max(TARGET_W / vW, TARGET_H / vH);
+        if (isMobile) {
+          // Clamp mobile zoom to prevent excessive cropping of the body
+          const fitWidthScale = TARGET_W / vW;
+          scale = Math.min(scale, fitWidthScale * 1.12);
+        }
         const drawW   = vW * scale;
         const drawH   = vH * scale;
         const offsetX = (TARGET_W - drawW) / 2;
