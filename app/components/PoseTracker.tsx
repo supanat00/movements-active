@@ -228,8 +228,8 @@ export default function PoseTracker({
     // Performance Throttling Settings
     let lastPoseRunTime = 0;
     let lastSegRunTime = 0;
-    const POSE_THROTTLE_MS = 33;  // ~30 FPS limit for PoseLandmarker
-    const SEG_THROTTLE_MS = 100; // ~10 FPS limit for ImageSegmenter background removal
+    const POSE_THROTTLE_MS = isMobile ? 33 : 0;  // 30 FPS on mobile, run every frame on desktop
+    const SEG_THROTTLE_MS = isMobile ? 33 : 0;   // 30 FPS on mobile, run every frame on desktop for perfect mask alignment
 
     const MODEL_BASE = 'https://storage.googleapis.com/mediapipe-models';
 
@@ -261,9 +261,9 @@ export default function PoseTracker({
         const stream = await navigator.mediaDevices.getUserMedia({
           video: {
             facingMode: 'user',
-            width:  isMobile ? { ideal: 720 } : { ideal: 1280 },
-            height: isMobile ? { ideal: 1280 } : { ideal: 720 },
-            aspectRatio: isMobile ? { ideal: 9/16 } : { ideal: 16/9 },
+            width:  { ideal: 720 },
+            height: { ideal: 1280 },
+            aspectRatio: { ideal: 9/16 },
             frameRate: { ideal: 30 }
           }
         });
