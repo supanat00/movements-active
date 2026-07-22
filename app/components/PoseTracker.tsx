@@ -642,9 +642,8 @@ export default function PoseTracker({
         const stream = await navigator.mediaDevices.getUserMedia({
           video: {
             facingMode: 'user',
-            width:  isMobile ? { ideal: 720 } : { ideal: 1280 },
-            height: isMobile ? { ideal: 1280 } : { ideal: 720  },
-            aspectRatio: isMobile ? { ideal: 9/16 } : { ideal: 16/9 },
+            width:  isMobile ? { ideal: 1080 } : { ideal: 1920 },
+            height: isMobile ? { ideal: 1920 } : { ideal: 1080  },
             frameRate: { ideal: 30 }
           }
         });
