@@ -650,6 +650,7 @@ export default function PoseTracker({
             facingMode: 'user',
             width:  isMobile ? { ideal: 720 } : { ideal: 1280 },
             height: isMobile ? { ideal: 1280 } : { ideal: 720  },
+            aspectRatio: isMobile ? { ideal: 9/16 } : { ideal: 16/9 },
             frameRate: { ideal: 30 }
           }
         });
