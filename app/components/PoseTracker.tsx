@@ -68,11 +68,10 @@ export default function PoseTracker({
   const mediaRecorderRef  = useRef<MediaRecorder | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
 
-  const [vision, setVision]             = useState<any>(null);
   const [cameraError, setCameraError]   = useState<string | null>(null);
   const [loadProgress, setLoadProgress] = useState(0);
   const [loadStatus,   setLoadStatus]   = useState('กำลังเชื่อมต่อระบบ AI...');
-  const [canvasHeight, setCanvasHeight] = useState(1280);
+  const canvasHeightRef                 = useRef(1280);
 
   useEffect(() => {
     const handleResize = () => {
@@ -80,7 +79,7 @@ export default function PoseTracker({
         const parent = canvasRef.current.parentElement;
         const pw = parent?.clientWidth || window.innerWidth || 360;
         const ph = parent?.clientHeight || window.innerHeight || 640;
-        setCanvasHeight(Math.round(720 * (ph / pw)));
+        canvasHeightRef.current = Math.round(720 * (ph / pw));
       }
     };
     handleResize();
@@ -212,31 +211,8 @@ export default function PoseTracker({
     }
   }, [gameStatus, removeBackground, bgType, bgVideoUrl]);
 
-  // ── Init tasks-vision models ──────────────────────────────────────────────
+  // ── Init camera & models in parallel ─────────────────────────────────────
   useEffect(() => {
-    let alive = true;
-    setLoadProgress(5);
-    setLoadStatus('กำลังโหลด AI Runtime...');
-    (async () => {
-      try {
-        const visionObj = await FilesetResolver.forVisionTasks(
-          'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm'
-        );
-        if (!alive) return;
-        setLoadProgress(20);
-        setLoadStatus('กำลังโหลดโมเดล AI...');
-        setVision(visionObj);
-      } catch (e) {
-        console.error('FilesetResolver failed', e);
-      }
-    })();
-    return () => { alive = false; };
-  }, []);
-
-  // ── Core camera + render loop ──────────────────────────────────────────────
-  useEffect(() => {
-    if (!vision || !videoRef.current) return;
-
     let poseLandmarker: PoseLandmarker | null = null;
     let imageSegmenter: ImageSegmenter | null = null;
     let poseDelegate: 'GPU' | 'CPU' = 'GPU';
@@ -248,7 +224,12 @@ export default function PoseTracker({
     const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
     const FRAME_MS = isMobile ? 33 : 0; // ~30fps throttle on mobile for performance
     let lastRenderTime = 0;
-    let segFrameCount  = 0;
+    
+    // Performance Throttling Settings
+    let lastPoseRunTime = 0;
+    let lastSegRunTime = 0;
+    const POSE_THROTTLE_MS = 33;  // ~30 FPS limit for PoseLandmarker
+    const SEG_THROTTLE_MS = 100; // ~10 FPS limit for ImageSegmenter background removal
 
     const MODEL_BASE = 'https://storage.googleapis.com/mediapipe-models';
 
@@ -274,26 +255,44 @@ export default function PoseTracker({
       return { instance, delegate: 'CPU' };
     };
 
-    let isCameraStreamReady = false;
-    let isPoseModelReady    = false;
-
-    const checkAllReady = () => {
-      if (!alive || !isCameraStreamReady || !isPoseModelReady) return;
-      setLoadProgress(95);
-      setLoadStatus('กำลังเริ่มต้นระบบ...');
-
-      let retries = 0;
-      const finalize = () => {
-        retries++;
-        if (bgType === 'image' && !bgImageLoadedRef.current && retries < 10) {
-          setTimeout(finalize, 100);
-          return;
+    // ── Camera start ──────────────────────────────────────────────────────────
+    const startCamera = async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: 'user',
+            width:  isMobile ? { ideal: 720 } : { ideal: 1280 },
+            height: isMobile ? { ideal: 1280 } : { ideal: 720 },
+            aspectRatio: isMobile ? { ideal: 9/16 } : { ideal: 16/9 },
+            frameRate: { ideal: 30 }
+          }
+        });
+        if (!videoRef.current || !alive) {
+          stream.getTracks().forEach(t => t.stop());
+          return false;
         }
-        setLoadProgress(100);
-        setLoadStatus('พร้อมแล้ว!');
-        if (onSystemReady) onSystemReady();
-      };
-      finalize();
+        
+        videoRef.current.srcObject = stream;
+        // Call play immediately for Safari / Mobile WebKit compatibility
+        videoRef.current.play().catch(err => console.warn('Video play catch:', err));
+
+        return new Promise<boolean>((resolve) => {
+          const signalReady = () => {
+            resolve(true);
+          };
+
+          if (videoRef.current && videoRef.current.readyState >= 1) {
+            signalReady();
+          } else if (videoRef.current) {
+            videoRef.current.onloadedmetadata = signalReady;
+            videoRef.current.onloadeddata = signalReady;
+          }
+          setTimeout(() => resolve(true), 800); // Fallback guarantee
+        });
+      } catch (err: any) {
+        console.error('Camera error:', err);
+        throw err;
+      }
     };
 
     const initModels = async () => {
@@ -318,40 +317,43 @@ export default function PoseTracker({
         outputConfidenceMasks: false,
       };
 
-      // ── 1. Start camera in parallel ──────────────────────────────────
-      setLoadStatus('กำลังเปิดกล้อง...');
-      startCamera();
+      // ── 1. Load FilesetResolver first (sequential start) ───────────────────
+      setLoadStatus('กำลังโหลด AI Runtime...');
+      setLoadProgress(10);
+      const visionObj = await FilesetResolver.forVisionTasks(
+        'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm'
+      );
+      if (!alive) return;
 
-      // ── 2. Load critical PoseLandmarker model ─────────────────────────
       setLoadStatus('กำลังโหลดระบบตรวจจับท่าทาง...');
       setLoadProgress(30);
+
+      // ── 2. Load PoseLandmarker model ─────────────────────────
       try {
         const res = await createAutoModel(
           poseOptions,
-          (opts) => PoseLandmarker.createFromOptions(vision, opts),
+          (opts) => PoseLandmarker.createFromOptions(visionObj, opts),
           'PoseLandmarker'
         );
         poseLandmarker = res.instance;
         poseDelegate   = res.delegate;
       } catch (e) {
         console.error('PoseLandmarker init failed:', e);
+        throw e;
       }
       if (!alive) return;
       
-      isPoseModelReady = true;
-      setLoadProgress(75);
-      checkAllReady();
+      setLoadProgress(70);
 
       // ── 3. Load optional ImageSegmenter in background (non-blocking) ──
-      // Force CPU delegate on mobile for 100% reliable execution (bypasses WebGL texture bugs)
       const useCpuForSeg = isMobile;
       const segOptsWithDelegate = useCpuForSeg
         ? { ...segOptions, baseOptions: { ...segOptions.baseOptions, delegate: 'CPU' as const } }
         : segOptions;
 
       const segLoader = useCpuForSeg
-        ? ImageSegmenter.createFromOptions(vision, segOptsWithDelegate).then(instance => ({ instance, delegate: 'CPU' as const }))
-        : createAutoModel(segOptions, (opts) => ImageSegmenter.createFromOptions(vision, opts), 'ImageSegmenter');
+        ? ImageSegmenter.createFromOptions(visionObj, segOptsWithDelegate).then(instance => ({ instance, delegate: 'CPU' as const }))
+        : createAutoModel(segOptions, (opts) => ImageSegmenter.createFromOptions(visionObj, opts), 'ImageSegmenter');
 
       segLoader.then(res => {
         if (!alive) return;
@@ -377,9 +379,11 @@ export default function PoseTracker({
           const sc  = Math.max(cW / vW, cH / vH);
           const dW  = vW * sc; const dH = vH * sc;
           const oX  = (cW - dW) / 2; const oY = (cH - dH) / 2;
+
+          // Use cH as the common divisor for both x and y to maintain 1:1 aspect ratio (undistorted)
           const mapped = lms.map((lm: any) => ({
             ...lm,
-            x: (oX + lm.x * dW) / cW,
+            x: (oX + lm.x * dW) / cH,
             y: (oY + lm.y * dH) / cH,
           }));
           onPoseDetectedRef.current(mapped);
@@ -456,7 +460,7 @@ export default function PoseTracker({
       if (!ctx) { animFrameId = requestAnimationFrame(renderFrame); return; }
 
       const TARGET_W = 720;
-      const TARGET_H = canvasHeight;
+      const TARGET_H = canvasHeightRef.current;
       if (canvasRef.current.width !== TARGET_W || canvasRef.current.height !== TARGET_H) {
         canvasRef.current.width  = TARGET_W;
         canvasRef.current.height = TARGET_H;
@@ -465,11 +469,19 @@ export default function PoseTracker({
       const vW = videoRef.current.videoWidth;
       const vH = videoRef.current.videoHeight;
       if (vW > 0 && vH > 0 && videoRef.current.readyState >= 2) {
-        // Execute AI tasks directly in loop
-        runPose(timestamp);
-        segFrameCount++;
-        if (segFrameCount % (isMobile ? 2 : 1) === 0) {
+        const now = performance.now();
+
+        // Throttled Pose Detection
+        if (now - lastPoseRunTime >= POSE_THROTTLE_MS) {
+          runPose(timestamp);
+          lastPoseRunTime = now;
+        }
+
+        // Throttled Segmentation
+        const { removeBackground } = uiStateRef.current;
+        if (removeBackground && now - lastSegRunTime >= SEG_THROTTLE_MS) {
           runSeg(timestamp);
+          lastSegRunTime = now;
         }
 
         const scale   = Math.max(TARGET_W / vW, TARGET_H / vH);
@@ -478,7 +490,7 @@ export default function PoseTracker({
         const offsetX = (TARGET_W - drawW) / 2;
         const offsetY = (TARGET_H - drawH) / 2;
 
-        const { gamePoints, globalTime, currentExercise, countdownValue, gameStatus: status, removeBackground, bgType } = uiStateRef.current;
+        const { gamePoints, globalTime, currentExercise, countdownValue, gameStatus: status, bgType } = uiStateRef.current;
 
         // 1. Draw composite layers
         ctx.clearRect(0, 0, TARGET_W, TARGET_H);
@@ -636,46 +648,24 @@ export default function PoseTracker({
       animFrameId = requestAnimationFrame(renderFrame);
     };
 
-    // ── Camera start ──────────────────────────────────────────────────────────
-    const startCamera = async () => {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            facingMode: 'user',
-            width:  isMobile ? { ideal: 1080 } : { ideal: 1920 },
-            height: isMobile ? { ideal: 1920 } : { ideal: 1080  },
-            aspectRatio: isMobile ? { ideal: 9/16 } : { ideal: 16/9 },
-            frameRate: { ideal: 30 }
-          }
-        });
-        if (!videoRef.current || !alive) return;
+    // ── Parallel system load initialization ───────────────────────────────
+    setLoadStatus('กำลังเริ่มต้นระบบ...');
+    setLoadProgress(5);
+
+    Promise.all([startCamera(), initModels()])
+      .then(() => {
+        if (!alive) return;
+        setLoadProgress(100);
+        setLoadStatus('พร้อมแล้ว!');
+        if (onSystemReady) onSystemReady();
         
-        videoRef.current.srcObject = stream;
-        // Call play immediately for Safari / Mobile WebKit compatibility
-        videoRef.current.play().catch(err => console.warn('Video play catch:', err));
-
-        let isSignaled = false;
-        const signalReady = () => {
-          if (isSignaled) return;
-          isSignaled = true;
-          isCameraStreamReady = true;
-          checkAllReady();
-        };
-
-        if (videoRef.current.readyState >= 1) {
-          signalReady();
-        } else {
-          videoRef.current.onloadedmetadata = signalReady;
-          videoRef.current.onloadeddata = signalReady;
-          setTimeout(signalReady, 800); // Fallback guarantee
-        }
-
         // Kickoff render loop
         animFrameId = requestAnimationFrame(renderFrame);
-      } catch (err: any) {
-        console.error('Camera error:', err);
+      })
+      .catch((err) => {
         if (!alive) return;
-        let msg = 'กล้องไม่สามารถเปิดได้\nกรุณาลองใหม่';
+        console.error('[System Init Failed]', err);
+        let msg = 'ระบบไม่สามารถเปิดใช้งานได้\nกรุณาลองใหม่';
         if (err?.name === 'NotAllowedError' || err?.name === 'PermissionDeniedError') {
           msg = 'กรุณาอนุญาตการใช้กล้อง\nในการตั้งค่าเบราว์เซอร์';
         } else if (err?.name === 'NotFoundError') {
@@ -684,10 +674,7 @@ export default function PoseTracker({
           msg = 'กล้องกำลังถูกใช้งานโดยแอปอื่น\nกรุณาปิดแอปอื่นก่อน';
         }
         setCameraError(msg);
-      }
-    };
-
-    initModels().catch(console.error);
+      });
 
     return () => {
       alive = false;
@@ -698,7 +685,7 @@ export default function PoseTracker({
       poseLandmarker?.close();
       imageSegmenter?.close();
     };
-  }, [vision]);
+  }, []);
 
   return (
     <div className="absolute inset-0 w-full h-full bg-black overflow-hidden">
@@ -764,7 +751,7 @@ export default function PoseTracker({
           className="absolute top-0 left-0 w-1 h-1 opacity-0 pointer-events-none"
           playsInline autoPlay loop muted crossOrigin="anonymous" />
       )}
-      <canvas ref={canvasRef} width={720} height={canvasHeight} className="absolute top-0 left-0 w-full h-full object-cover pointer-events-none" />
+      <canvas ref={canvasRef} width={720} height={canvasHeightRef.current} className="absolute top-0 left-0 w-full h-full object-cover pointer-events-none" />
     </div>
   );
 }
