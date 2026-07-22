@@ -764,7 +764,7 @@ export default function PoseTracker({
           className="absolute top-0 left-0 w-1 h-1 opacity-0 pointer-events-none"
           playsInline autoPlay loop muted crossOrigin="anonymous" />
       )}
-      <canvas ref={canvasRef} width={720} height={canvasHeight} className="absolute top-0 left-0 w-full h-full object-fill pointer-events-none" />
+      <canvas ref={canvasRef} width={720} height={canvasHeight} className="absolute top-0 left-0 w-full h-full object-cover pointer-events-none" />
     </div>
   );
 }
