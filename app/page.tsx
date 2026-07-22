@@ -76,6 +76,10 @@ export default function Home() {
     lastTime: Date.now()
   });
 
+  // rAF-based timer refs (more accurate than setInterval on mobile)
+  const timerRafRef = useRef<number>(0);
+  const gameTimeRef = useRef(15.0);
+
   const loadFfmpeg = async () => {
     const baseURL = "https://unpkg.com/@ffmpeg/core@0.12.10/dist/umd";
     if (!ffmpegRef.current) {
@@ -231,30 +235,34 @@ export default function Home() {
 
 
 
-  // Timer loop: decrement global 30s game time
+  // rAF-based timer: accurate on mobile (setInterval is throttled by browser under load)
   useEffect(() => {
-    let timer: NodeJS.Timeout;
-    let lastTime = performance.now();
-    
-    if (gameStatus === 'playing') {
-      timer = setInterval(() => {
-        const now = performance.now();
-        const dt = (now - lastTime) / 1000;
-        lastTime = now;
-        setGlobalTime((prev) => Math.max(0, prev - dt));
-      }, 100);
-    }
-    return () => clearInterval(timer);
+    cancelAnimationFrame(timerRafRef.current);
+    if (gameStatus !== 'playing') return;
+
+    // Sync internal ref from React state when game starts
+    gameTimeRef.current = globalTime;
+    let lastTs = performance.now();
+
+    const tick = (now: number) => {
+      const dt = (now - lastTs) / 1000;
+      lastTs = now;
+      const next = Math.max(0, gameTimeRef.current - dt);
+      gameTimeRef.current = next;
+      setGlobalTime(next);
+
+      if (next <= 0) {
+        setGameStatus('ending');
+        setTimeout(() => setGameStatus('preview'), 2000);
+      } else {
+        timerRafRef.current = requestAnimationFrame(tick);
+      }
+    };
+    timerRafRef.current = requestAnimationFrame(tick);
+
+    return () => cancelAnimationFrame(timerRafRef.current);
   }, [gameStatus]);
 
-  // Game Logic check loop
-  useEffect(() => {
-    if (gameStatus !== 'playing') return;
-    if (globalTime <= 0) {
-      setGameStatus('ending');
-      setTimeout(() => setGameStatus('preview'), 2000);
-    }
-  }, [gameStatus, globalTime]);
 
   // Warning Popup on 3s of inactivity (wait 3s -> show 1.5s -> wait 3s)
   useEffect(() => {

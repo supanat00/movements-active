@@ -203,6 +203,15 @@ export default function PoseTracker({
     let animFrameId: number;
     let alive = true;
 
+    // ── Shared frame-loop state (accessible by renderFrame + onLoaded) ────────
+    const isMobile  = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+    const FRAME_MS  = isMobile ? 33 : 0;   // ~30fps cap on mobile, uncapped on desktop
+    let lastRenderTime = 0;
+    let segFrameCount  = 0;
+    let hasRVFC        = false;             // set in onLoaded once camera starts
+    let runPoseFn: ((t: number) => void) | null = null;
+    let runSegFn:  ((t: number) => void) | null = null;
+
     const MODEL_BASE = 'https://storage.googleapis.com/mediapipe-models';
 
     const initModels = async () => {
@@ -279,9 +288,17 @@ export default function PoseTracker({
       }
     };
 
-    // ── rAF render loop ───────────────────────────────────────────────────────
-    const renderFrame = () => {
+    // ── Master rAF loop (single loop — drives pose/seg on non-rVFC) ─────────
+    const renderFrame = (timestamp: number) => {
       if (!alive) return;
+
+      // 30fps cap on mobile saves ~50% GPU (33ms ≈ 30fps)
+      if (FRAME_MS > 0 && timestamp - lastRenderTime < FRAME_MS) {
+        animFrameId = requestAnimationFrame(renderFrame);
+        return;
+      }
+      lastRenderTime = timestamp;
+
       if (!videoRef.current || !canvasRef.current) {
         animFrameId = requestAnimationFrame(renderFrame);
         return;
@@ -290,12 +307,20 @@ export default function PoseTracker({
       const ctx = canvasRef.current.getContext('2d');
       if (!ctx) { animFrameId = requestAnimationFrame(renderFrame); return; }
 
-          const TARGET_W = 720;
-          const TARGET_H = 1280;
-          if (canvasRef.current.width !== TARGET_W) {
-            canvasRef.current.width = TARGET_W;
-            canvasRef.current.height = TARGET_H;
-          }
+      // Non-rVFC (iOS/low-spec): run AI in same rAF to avoid double loop
+      if (!hasRVFC && videoRef.current.readyState >= 2) {
+        runPoseFn?.(timestamp);
+        segFrameCount++;
+        if (segFrameCount % (isMobile ? 3 : 2) === 0) runSegFn?.(timestamp);
+      }
+
+      // Adaptive canvas: 360×640 on mobile (-75% pixels vs 720×1280)
+      const TARGET_W = isMobile ? 360 : 720;
+      const TARGET_H = isMobile ? 640 : 1280;
+      if (canvasRef.current.width !== TARGET_W) {
+        canvasRef.current.width  = TARGET_W;
+        canvasRef.current.height = TARGET_H;
+      }
 
       const vW = videoRef.current.videoWidth;
       const vH = videoRef.current.videoHeight;
@@ -309,11 +334,17 @@ export default function PoseTracker({
 
       const { gamePoints, globalTime, currentExercise, countdownValue, gameStatus: status, removeBackground, bgType } = uiStateRef.current;
 
-      // ── 1. Always draw mirrored camera first (base layer / fallback) ─────────
+      // ── 1. Always draw mirrored camera first (base layer) ───────────────
       ctx.save();
       ctx.translate(TARGET_W, 0); ctx.scale(-1, 1);
       ctx.drawImage(videoRef.current, offsetX, offsetY, drawW, drawH);
       ctx.restore();
+
+      // Skip heavy compositing on passive states (idle/preview/win/lose)
+      if (status === 'idle' || status === 'preview' || status === 'win' || status === 'lose') {
+        animFrameId = requestAnimationFrame(renderFrame);
+        return;
+      }
 
       // ── 2. If removeBackground: overlay synthetic bg + composited person ─────
       if (removeBackground) {
@@ -557,15 +588,11 @@ export default function PoseTracker({
           };
           checkReady();
 
-          // ── Frame scheduling: rVFC where supported, rAF fallback for iOS ────────
-          // rVFC = requestVideoFrameCallback (not supported on iOS Safari)
-          const hasRVFC = 'requestVideoFrameCallback' in HTMLVideoElement.prototype;
-          let lastFrameTime = -1;
-          let segFrameCount = 0;
+          // Set rVFC flag — read by renderFrame to know which path is active
+          hasRVFC = 'requestVideoFrameCallback' in HTMLVideoElement.prototype;
 
           const runPose = (nowMs: number) => {
             if (!alive || !videoRef.current || !poseLandmarker) return;
-            if (nowMs === lastFrameTime) return; // deduplicate
             const result = poseLandmarker.detectForVideo(videoRef.current, nowMs);
             if (result.landmarks?.[0]) {
               const lms = result.landmarks[0];
@@ -598,7 +625,6 @@ export default function PoseTracker({
                 const tc = segMaskDataRef.current;
                 if (tc.width !== w || tc.height !== h) { tc.width = w; tc.height = h; }
                 const tCtx = tc.getContext('2d')!;
-                // Reuse ImageData to avoid GC churn on every frame
                 if (!imgDataRef.current || imgDataRef.current.width !== w || imgDataRef.current.height !== h) {
                   imgDataRef.current = tCtx.createImageData(w, h);
                 }
@@ -608,57 +634,39 @@ export default function PoseTracker({
                   const buf = imgData.data;
                   for (let i = 0; i < f32.length; i++) {
                     let v = f32[i];
-                    // Wider feather zone (was 0.4–0.7 → now 0.15–0.85)
-                    // Keeps more edge pixels when standing far away or moving fast
                     if (v < 0.15) v = 0;
                     else if (v > 0.85) v = 1;
                     else v = (v - 0.15) / 0.70;
                     const idx = i * 4;
-                    buf[idx]     = 255;
-                    buf[idx + 1] = 255;
-                    buf[idx + 2] = 255;
-                    buf[idx + 3] = v * 255;
+                    buf[idx] = 255; buf[idx+1] = 255; buf[idx+2] = 255;
+                    buf[idx+3] = v * 255;
                   }
                   tCtx.putImageData(imgData, 0, 0);
-                } catch (e) {
-                  console.warn('MPMask error:', e);
-                }
+                } catch (e) { console.warn('MPMask error:', e); }
                 confMask.close?.();
               }
             });
           };
 
-          const runFrame = (nowMs: number) => {
-            if (!alive) return;
-            runPose(nowMs);
-            // Throttle segmentation: every 2 frames reduces load on mobile ~50%
-            segFrameCount++;
-            if (segFrameCount % 2 === 0) runSeg(nowMs);
-            lastFrameTime = nowMs;
-            scheduleFrame();
-          };
+          // Expose to renderFrame via shared closure variables
+          runPoseFn = runPose;
+          runSegFn  = runSeg;
 
-          const scheduleFrame = () => {
-            if (!alive || !videoRef.current) return;
-            if (hasRVFC) {
-              (videoRef.current as any).requestVideoFrameCallback(
-                (_: any, m: any) => runFrame(m.mediaTime * 1000)
-              );
-            } else {
-              // iOS Safari / devices without rVFC: use requestAnimationFrame
-              requestAnimationFrame((ts) => {
-                if (!alive) return;
-                if (videoRef.current && videoRef.current.readyState >= 2) {
-                  runFrame(ts);
-                } else {
-                  scheduleFrame(); // video not ready yet, retry
-                }
-              });
-            }
-          };
+          // rVFC path: fires at video frame rate (~30fps)
+          // Only drives pose+seg — rendering stays in the single rAF loop
+          if (hasRVFC) {
+            const rvcfLoop = (_: any, m: any) => {
+              if (!alive || !videoRef.current) return;
+              runPose(m.mediaTime * 1000);
+              segFrameCount++;
+              if (segFrameCount % 2 === 0) runSeg(m.mediaTime * 1000);
+              (videoRef.current as any).requestVideoFrameCallback(rvcfLoop);
+            };
+            (videoRef.current as any).requestVideoFrameCallback(rvcfLoop);
+          }
+          // Non-rVFC (iOS/low-spec): renderFrame handles pose+seg inline
 
-          scheduleFrame();
-          renderFrame();
+          renderFrame(0); // kick off single master rAF loop
         };
 
         if (videoRef.current.readyState >= 1) {
