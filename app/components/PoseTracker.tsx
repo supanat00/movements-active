@@ -480,14 +480,24 @@ export default function PoseTracker({
 
         const { gamePoints, globalTime, currentExercise, countdownValue, gameStatus: status, removeBackground, bgType } = uiStateRef.current;
 
-        // 1. Draw camera feed base layer (Always drawn!)
-        ctx.save();
-        ctx.translate(TARGET_W, 0); ctx.scale(-1, 1);
-        ctx.drawImage(videoRef.current, offsetX, offsetY, drawW, drawH);
-        ctx.restore();
+        // 1. Draw composite layers
+        ctx.clearRect(0, 0, TARGET_W, TARGET_H);
 
-        // 2. Background Removal Overlay (Only if removeBackground AND valid seg mask is available)
         if (removeBackground && hasValidSegMaskRef.current && segMaskDataRef.current) {
+          // Draw mask on main canvas first (mirrored)
+          ctx.save();
+          ctx.translate(TARGET_W, 0); ctx.scale(-1, 1);
+          ctx.drawImage(segMaskDataRef.current, offsetX, offsetY, drawW, drawH);
+          
+          // Crop source to keep only the mask shape
+          ctx.globalCompositeOperation = 'source-in';
+          // Draw camera feed
+          ctx.drawImage(videoRef.current, offsetX, offsetY, drawW, drawH);
+          ctx.restore();
+
+          // Draw background behind the person shape
+          ctx.globalCompositeOperation = 'destination-over';
+          
           const bgVideoEl = bgVideoRef.current;
           if (bgType === 'video' && bgVideoEl && bgVideoEl.readyState >= 2) {
             const bs = Math.max(TARGET_W / bgVideoEl.videoWidth, TARGET_H / bgVideoEl.videoHeight);
@@ -505,31 +515,15 @@ export default function PoseTracker({
           } else {
             drawNeonGridBg(ctx, TARGET_W, TARGET_H);
           }
-
-          const maskSource = segMaskDataRef.current;
-          if (!maskCanvasRef.current) maskCanvasRef.current = document.createElement('canvas');
-          const mc = maskCanvasRef.current;
-          if (mc.width !== TARGET_W || mc.height !== TARGET_H) { mc.width = TARGET_W; mc.height = TARGET_H; }
-          const mCtx = mc.getContext('2d')!;
-          mCtx.clearRect(0, 0, TARGET_W, TARGET_H);
-          mCtx.save();
-          mCtx.translate(TARGET_W, 0); mCtx.scale(-1, 1);
-          mCtx.drawImage(maskSource, offsetX, offsetY, drawW, drawH);
-          mCtx.restore();
-
-          if (!offscreenRef.current) offscreenRef.current = document.createElement('canvas');
-          const oc = offscreenRef.current;
-          if (oc.width !== TARGET_W || oc.height !== TARGET_H) { oc.width = TARGET_W; oc.height = TARGET_H; }
-          const oCtx = oc.getContext('2d')!;
-          oCtx.clearRect(0, 0, TARGET_W, TARGET_H);
-          oCtx.save();
-          oCtx.translate(TARGET_W, 0); oCtx.scale(-1, 1);
-          oCtx.drawImage(videoRef.current, offsetX, offsetY, drawW, drawH);
-          oCtx.restore();
-          oCtx.globalCompositeOperation = 'destination-in';
-          oCtx.drawImage(mc, 0, 0);
-          oCtx.globalCompositeOperation = 'source-over';
-          ctx.drawImage(oc, 0, 0);
+          
+          // Reset composite operation to default
+          ctx.globalCompositeOperation = 'source-over';
+        } else {
+          // Draw normal camera feed if background removal is disabled or mask is not valid
+          ctx.save();
+          ctx.translate(TARGET_W, 0); ctx.scale(-1, 1);
+          ctx.drawImage(videoRef.current, offsetX, offsetY, drawW, drawH);
+          ctx.restore();
         }
 
         // 3. HUD Layer
