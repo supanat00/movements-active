@@ -68,8 +68,6 @@ const VideoResult = ({ recordedVideoUrl, isProcessingVideo, onSave, onShare }: V
 interface GameUIProps {
   gameStatus: 'idle' | 'tutorial' | 'countdown' | 'playing' | 'win' | 'lose' | 'ending' | 'preview';
   currentExercise: 'jumping_jacks' | 'squats' | 'high_knees';
-  countdownValue?: number;
-  globalTime?: number;
   gamePoints?: number;
   showWarning?: string[] | null;
   recordedVideoUrl?: string | null;
@@ -87,9 +85,9 @@ interface GameUIProps {
   onShare?: () => void;
 }
 
-export default function GameUI({
-  gameStatus, currentExercise, countdownValue,
-  globalTime = 15, gamePoints = 0, showWarning = null,
+export default React.memo(function GameUI({
+  gameStatus, currentExercise,
+  gamePoints = 0, showWarning = null,
   recordedVideoUrl = null, isProcessingVideo = false,
   removeBackground = false, bgType = 'neon-grid', bgVideoUrl = null,
   isStarting = false,
@@ -518,4 +516,4 @@ export default function GameUI({
       )}
     </div>
   );
-}
+});

@@ -68,6 +68,23 @@ export default function Home() {
 
   const currentLandmarks = useRef<any>(null);
 
+  // High-frequency state Ref to prevent re-rendering sub-components on every tick
+  const gameStateRef = useRef({
+    gamePoints: 0,
+    globalTime: 15.0,
+    currentExercise: 'jumping_jacks' as 'jumping_jacks' | 'squats' | 'high_knees',
+    countdownValue: 4,
+  });
+
+  useEffect(() => {
+    gameStateRef.current = {
+      gamePoints,
+      globalTime,
+      currentExercise,
+      countdownValue: countdown,
+    };
+  }, [gamePoints, globalTime, currentExercise, countdown]);
+
   // Pose logic state ref to avoid stale closures in callbacks without re-renders
   const poseState = useRef({
     isJumping: false,
@@ -113,12 +130,21 @@ export default function Home() {
       });
   }, []);
 
-  const handleRecordingComplete = (blob: Blob) => {
+  const handleRecordingComplete = useCallback((blob: Blob) => {
     console.log("Recording complete! Type:", blob.type);
     setRawVideoBlob(blob);
     setRecordedVideoUrl(URL.createObjectURL(blob));
     setProcessedVideoUrls({});
-  };
+  }, []);
+
+  const handleSystemReady = useCallback(() => {
+    setIsSystemReady(true);
+  }, []);
+
+  const handleTutorialComplete = useCallback(() => {
+    setCountdown(4);
+    setGameStatus('countdown');
+  }, []);
 
   const processVideoToMp4 = async (resolution: '360p' | '720p'): Promise<string | null> => {
     if (processedVideoUrls[resolution]) return processedVideoUrls[resolution]!;
@@ -464,8 +490,6 @@ export default function Home() {
         {/* Overlay Effects */}
         <div className="absolute inset-0 z-10 pointer-events-none">
           <VFXOverlay 
-            timeRemaining={globalTime} 
-            maxTime={30} 
             score={gamePoints}
             targetScore={999}
             gameStatus={gameStatus} 
@@ -479,14 +503,11 @@ export default function Home() {
             onPoseDetected={handlePoseDetected} 
             gameStatus={gameStatus}
             onRecordingComplete={handleRecordingComplete}
-            gamePoints={gamePoints}
-            globalTime={globalTime}
-            currentExercise={currentExercise}
-            countdownValue={countdown}
+            gameStateRef={gameStateRef}
             removeBackground={removeBackground}
             bgType={bgType}
             bgVideoUrl={bgVideoUrl}
-            onSystemReady={() => setIsSystemReady(true)}
+            onSystemReady={handleSystemReady}
           />
         </div>
 
@@ -496,8 +517,6 @@ export default function Home() {
             showWarning={showWarning}
             gameStatus={gameStatus}
             currentExercise={currentExercise}
-            countdownValue={countdown}
-            globalTime={globalTime}
             gamePoints={gamePoints}
             recordedVideoUrl={recordedVideoUrl}
             isProcessingVideo={isProcessingVideo}
@@ -508,10 +527,7 @@ export default function Home() {
             setRemoveBackground={setRemoveBackground}
             setBgType={setBgType}
             setBgVideoUrl={setBgVideoUrl}
-            onTutorialComplete={() => {
-              setCountdown(4);
-              setGameStatus('countdown');
-            }}
+            onTutorialComplete={handleTutorialComplete}
             onStart={startGame}
             onSave={handleSave}
             onShare={handleShare}

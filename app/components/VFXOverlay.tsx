@@ -3,26 +3,22 @@
 import React, { useEffect, useRef } from 'react';
 
 interface VFXOverlayProps {
-  timeRemaining: number;
-  maxTime: number;
   score: number;
   targetScore: number;
   gameStatus: 'idle' | 'tutorial' | 'countdown' | 'playing' | 'win' | 'lose' | 'ending' | 'preview';
   currentLandmarks?: React.MutableRefObject<any>;
 }
 
-// Removed Particle interface as we only use the mist image now
-
-export default function VFXOverlay({ timeRemaining, maxTime, score, targetScore, gameStatus, currentLandmarks }: VFXOverlayProps) {
+function VFXOverlay({ score, targetScore, gameStatus, currentLandmarks }: VFXOverlayProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animationRef = useRef<number>(0);
 
   // Use a ref to store the latest props so the animation loop doesn't restart every 100ms
-  const stateRef = useRef({ timeRemaining, maxTime, score, targetScore, gameStatus });
+  const stateRef = useRef({ score, targetScore, gameStatus });
   
   useEffect(() => {
-    stateRef.current = { timeRemaining, maxTime, score, targetScore, gameStatus };
-  }, [timeRemaining, maxTime, score, targetScore, gameStatus]);
+    stateRef.current = { score, targetScore, gameStatus };
+  }, [score, targetScore, gameStatus]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -38,34 +34,27 @@ export default function VFXOverlay({ timeRemaining, maxTime, score, targetScore,
     resizeCanvas();
     window.addEventListener('resize', resizeCanvas);
 
-    // Custom mist image removed as file was deleted
-
+    let active = true;
     const render = () => {
+      if (!active) return;
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       
-      const { score, targetScore, gameStatus } = stateRef.current;
+      const { gameStatus } = stateRef.current;
 
-      if (gameStatus === 'win' || gameStatus === 'lose') {
-         // Do not render anything
-      } else if (currentLandmarks && currentLandmarks.current && (gameStatus === 'idle' || gameStatus === 'playing' || gameStatus === 'countdown')) {
-        const lms = currentLandmarks.current;
-        
-        // Calculate intensity
-        const fogIntensity = Math.max(0, 1 - (score / targetScore));
-        
-        // Removed mist drawing based on user request
+      // Only schedule next frame if actively playing or in countdown
+      if (gameStatus === 'playing' || gameStatus === 'countdown') {
+        animationRef.current = requestAnimationFrame(render);
       }
-
-      animationRef.current = requestAnimationFrame(render);
     };
 
     render();
 
     return () => {
+      active = false;
       window.removeEventListener('resize', resizeCanvas);
       if (animationRef.current) cancelAnimationFrame(animationRef.current);
     };
-  }, [currentLandmarks]); // Only depend on currentLandmarks so the loop doesn't restart every 100ms
+  }, [currentLandmarks, gameStatus]);
 
   return (
     <canvas 
@@ -74,3 +63,5 @@ export default function VFXOverlay({ timeRemaining, maxTime, score, targetScore,
     />
   );
 }
+
+export default React.memo(VFXOverlay);

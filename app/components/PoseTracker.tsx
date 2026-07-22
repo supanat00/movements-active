@@ -31,19 +31,21 @@ interface PoseTrackerProps {
   onPoseDetected: (landmarks: any) => void;
   gameStatus: string;
   onRecordingComplete?: (blob: Blob) => void;
-  gamePoints?: number;
-  globalTime?: number;
-  currentExercise?: string;
-  countdownValue?: number;
+  gameStateRef: React.RefObject<{
+    gamePoints: number;
+    globalTime: number;
+    currentExercise: 'jumping_jacks' | 'squats' | 'high_knees';
+    countdownValue: number;
+  }>;
   removeBackground?: boolean;
   bgType?: 'neon-grid' | 'synthwave' | 'video' | 'image';
   bgVideoUrl?: string | null;
   onSystemReady?: () => void;
 }
 
-export default function PoseTracker({
+function PoseTracker({
   onPoseDetected, gameStatus, onRecordingComplete,
-  gamePoints = 0, globalTime = 0, currentExercise = '',  countdownValue = 0,
+  gameStateRef,
   removeBackground = false,
   bgType = 'synthwave',
   bgVideoUrl = null,
@@ -65,8 +67,8 @@ export default function PoseTracker({
   const onRecordingCompleteRef = useRef(onRecordingComplete);
   const staticBgImgRef   = useRef<HTMLImageElement | null>(null);
 
-  // Keep state refs in sync for render loop
-  const uiStateRef = useRef({ gamePoints, globalTime, currentExercise, gameStatus, countdownValue, removeBackground, bgType, bgVideoUrl });
+  // Keep state refs in sync for render loop (only track slow-changing variables here)
+  const uiStateRef = useRef({ gameStatus, removeBackground, bgType, bgVideoUrl });
 
   const mediaRecorderRef  = useRef<MediaRecorder | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
@@ -93,8 +95,8 @@ export default function PoseTracker({
   useEffect(() => {
     onPoseDetectedRef.current      = onPoseDetected;
     onRecordingCompleteRef.current = onRecordingComplete;
-    uiStateRef.current = { gamePoints, globalTime, currentExercise, gameStatus, countdownValue, removeBackground, bgType, bgVideoUrl };
-  }, [onPoseDetected, onRecordingComplete, gamePoints, globalTime, currentExercise, gameStatus, countdownValue, removeBackground, bgType, bgVideoUrl]);
+    uiStateRef.current = { gameStatus, removeBackground, bgType, bgVideoUrl };
+  }, [onPoseDetected, onRecordingComplete, gameStatus, removeBackground, bgType, bgVideoUrl]);
 
   const bgImageLoadedRef = useRef<boolean>(false);
   const logoImgRef       = useRef<HTMLImageElement | null>(null);
@@ -225,14 +227,14 @@ export default function PoseTracker({
     let alive = true;
     
     const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
-    const FRAME_MS = isMobile ? 33 : 0; // ~30fps throttle on mobile for performance
+    const FRAME_MS = isMobile ? 45 : 30; // Limit rendering loop max FPS to ~22 (mobile) or ~33 (desktop) to save CPU/GPU overhead
     let lastRenderTime = 0;
     
     // Performance Throttling Settings
     let lastPoseRunTime = 0;
     let lastSegRunTime = 0;
-    const poseThrottleMs = isMobile ? 33 : 0;  // 30 FPS on mobile, run every frame on desktop
-    let segThrottleMs = isMobile ? 120 : 0;  // Start conservative, will update dynamically
+    const poseThrottleMs = isMobile ? 40 : 33;  // Pose detection capped at 25 FPS (mobile) and 30 FPS (desktop)
+    let segThrottleMs = isMobile ? 150 : 80;  // Default CPU segmentation throttle values
 
     const MODEL_BASE = 'https://storage.googleapis.com/mediapipe-models';
 
@@ -410,9 +412,9 @@ export default function PoseTracker({
         
         // Dynamically adjust throttling speed depending on the active delegate:
         if (res.delegate === 'GPU') {
-          segThrottleMs = isMobile ? 33 : 0; // GPU is extremely fast, run at 30/60 FPS
+          segThrottleMs = isMobile ? 45 : 33; // GPU capped at 22 FPS (mobile) and 30 FPS (desktop) to save resources
         } else {
-          segThrottleMs = isMobile ? 100 : 50; // CPU is slower, throttle to keep UI thread responsive
+          segThrottleMs = isMobile ? 150 : 80; // CPU is slower, throttle more to keep UI thread responsive
         }
         
         console.info(`[PoseTracker] ImageSegmenter ready in background (${res.delegate}) - Throttle: ${segThrottleMs}ms`);
@@ -515,7 +517,7 @@ export default function PoseTracker({
                       const pixelIdx = sy * w + sx;
                       if (maskBytes[pixelIdx] < 0.5 && visited[pixelIdx] === 0) {
                         visited[pixelIdx] = 1;
-                        queue[tail++] = pixelIdx;
+                        queue[tail++] = (sy << 16) | sx; // Pack (y, x) into integer
                       }
                     }
                   }
@@ -526,39 +528,40 @@ export default function PoseTracker({
               if (tail > 0) {
                 while (head < tail) {
                   const curr = queue[head++];
-                  const cx = curr % w;
-                  const cy = Math.floor(curr / w);
+                  const cx = curr & 0xffff;  // Unpack x
+                  const cy = curr >> 16;     // Unpack y
+                  const currIdx = cy * w + cx;
 
                   // Left
                   if (cx > 0) {
-                    const n = curr - 1;
-                    if (visited[n] === 0 && maskBytes[n] < 0.5) {
-                      visited[n] = 1;
-                      queue[tail++] = n;
+                    const nIdx = currIdx - 1;
+                    if (visited[nIdx] === 0 && maskBytes[nIdx] < 0.5) {
+                      visited[nIdx] = 1;
+                      queue[tail++] = (cy << 16) | (cx - 1);
                     }
                   }
                   // Right
                   if (cx < w - 1) {
-                    const n = curr + 1;
-                    if (visited[n] === 0 && maskBytes[n] < 0.5) {
-                      visited[n] = 1;
-                      queue[tail++] = n;
+                    const nIdx = currIdx + 1;
+                    if (visited[nIdx] === 0 && maskBytes[nIdx] < 0.5) {
+                      visited[nIdx] = 1;
+                      queue[tail++] = (cy << 16) | (cx + 1);
                     }
                   }
                   // Up
                   if (cy > 0) {
-                    const n = curr - w;
-                    if (visited[n] === 0 && maskBytes[n] < 0.5) {
-                      visited[n] = 1;
-                      queue[tail++] = n;
+                    const nIdx = currIdx - w;
+                    if (visited[nIdx] === 0 && maskBytes[nIdx] < 0.5) {
+                      visited[nIdx] = 1;
+                      queue[tail++] = ((cy - 1) << 16) | cx;
                     }
                   }
                   // Down
                   if (cy < h - 1) {
-                    const n = curr + w;
-                    if (visited[n] === 0 && maskBytes[n] < 0.5) {
-                      visited[n] = 1;
-                      queue[tail++] = n;
+                    const nIdx = currIdx + w;
+                    if (visited[nIdx] === 0 && maskBytes[nIdx] < 0.5) {
+                      visited[nIdx] = 1;
+                      queue[tail++] = ((cy + 1) << 16) | cx;
                     }
                   }
                 }
@@ -587,11 +590,29 @@ export default function PoseTracker({
       }
     };
 
+    let hasClearedCanvasOnce = false;
+
     // ── Master rAF loop ──────────────────────────────────────────────────
     const renderFrame = (timestamp: number) => {
       if (!alive) return;
 
-      // 30fps cap on mobile to prevent GPU thermal throttling
+      const { gameStatus: status } = uiStateRef.current;
+      const isLoopNeeded = status === 'tutorial' || status === 'countdown' || status === 'playing' || status === 'ending';
+
+      if (!isLoopNeeded) {
+        // Skip AI & drawing entirely during idle / preview / win / lose states
+        if (!hasClearedCanvasOnce && canvasRef.current) {
+          const ctx = canvasRef.current.getContext('2d');
+          if (ctx) ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+          hasClearedCanvasOnce = true;
+        }
+        animFrameId = requestAnimationFrame(renderFrame);
+        return;
+      }
+
+      hasClearedCanvasOnce = false; // Reset to allow clearing next time we exit active state
+
+      // Limit rendering loop max FPS
       if (FRAME_MS > 0 && timestamp - lastRenderTime < FRAME_MS) {
         animFrameId = requestAnimationFrame(renderFrame);
         return;
@@ -620,7 +641,9 @@ export default function PoseTracker({
         const { removeBackground } = uiStateRef.current;
 
         // Run Pose detection independently on every render frame (subject to its throttle)
-        if (now - lastPoseRunTime >= poseThrottleMs) {
+        // We only need pose detection during play, or when background removal is active (to get BFS seeds)
+        const needPose = status === 'playing' || (removeBackground && (status === 'countdown' || status === 'tutorial'));
+        if (needPose && (now - lastPoseRunTime >= poseThrottleMs)) {
           runPose(timestamp);
           lastPoseRunTime = now;
         }
@@ -633,7 +656,13 @@ export default function PoseTracker({
 
         const { drawW, drawH, offsetX, offsetY } = getScaleParams(vW, vH, TARGET_W, TARGET_H);
 
-        const { gamePoints, globalTime, currentExercise, countdownValue, gameStatus: status, bgType } = uiStateRef.current;
+        const { bgType } = uiStateRef.current;
+        const gState = gameStateRef.current;
+        if (!gState) {
+          animFrameId = requestAnimationFrame(renderFrame);
+          return;
+        }
+        const { gamePoints, globalTime, currentExercise, countdownValue } = gState;
 
         // 1. Draw composite layers
         ctx.clearRect(0, 0, TARGET_W, TARGET_H);
@@ -683,7 +712,7 @@ export default function PoseTracker({
 
         // 3. HUD Layer
         if (status === 'countdown') {
-          const cdValue = uiStateRef.current.countdownValue;
+          const cdValue = countdownValue;
           if (cdValue !== undefined && cdValue !== null) {
             ctx.save();
             ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
@@ -899,6 +928,8 @@ export default function PoseTracker({
   );
 }
 
+export default React.memo(PoseTracker);
+
 // ── Background Drawing Helpers ──────────────────────────────────────────────────
 let gridOffset = 0;
 const drawNeonGridBg = (ctx: CanvasRenderingContext2D, w: number, h: number) => {
@@ -907,27 +938,51 @@ const drawNeonGridBg = (ctx: CanvasRenderingContext2D, w: number, h: number) => 
   ctx.fillStyle = g; ctx.fillRect(0, 0, w, h);
 
   const hz = h * 0.45;
-  ctx.save(); ctx.shadowColor = '#06b6d4'; ctx.shadowBlur = 12; ctx.strokeStyle = '#06b6d4'; ctx.lineWidth = 3;
+  
+  // 1. Batch Vertical Lines with shadowBlur (glow)
+  ctx.save();
+  ctx.shadowColor = '#06b6d4';
+  ctx.shadowBlur = 12;
+  ctx.strokeStyle = '#06b6d4';
+  ctx.lineWidth = 3;
+  ctx.beginPath();
   for (let i = 0; i <= 14; i++) {
     const xT = (w / 14) * i;
-    ctx.beginPath(); ctx.moveTo(xT, hz); ctx.lineTo(w / 2 + (xT - w / 2) * 4, h); ctx.stroke();
+    ctx.moveTo(xT, hz);
+    ctx.lineTo(w / 2 + (xT - w / 2) * 4, h);
   }
+  ctx.stroke();
+  ctx.restore();
+
+  // 2. Draw Horizontal Lines without shadowBlur (extremely fast)
   gridOffset = (gridOffset + 3) % 40;
+  ctx.save();
+  ctx.lineWidth = 2;
   for (let y = hz; y < h; y += 40) {
     const ay = y + gridOffset;
     const alpha = Math.min(1, (ay - hz) / (h - hz));
     ctx.strokeStyle = `rgba(6,182,212,${alpha * 0.7})`;
-    ctx.beginPath(); ctx.moveTo(0, ay); ctx.lineTo(w, ay); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(0, ay);
+    ctx.lineTo(w, ay);
+    ctx.stroke();
   }
   ctx.restore();
+
+  // 3. Batch particles
   const t = Date.now() * 0.001;
+  ctx.save();
   ctx.fillStyle = 'rgba(236,72,153,0.6)';
+  ctx.beginPath();
   for (let i = 0; i < 12; i++) {
     const px = (Math.sin(i * 123 + t) * 0.5 + 0.5) * w;
     const py = hz + ((i * 59 + t * 60) % (h - hz));
     const sz = (1 - (py - hz) / (h - hz)) * 8 + 3;
-    ctx.beginPath(); ctx.arc(px, py, sz, 0, Math.PI * 2); ctx.fill();
+    ctx.moveTo(px + sz, py);
+    ctx.arc(px, py, sz, 0, Math.PI * 2);
   }
+  ctx.fill();
+  ctx.restore();
 };
 
 let synthwaveOffset = 0;
@@ -945,17 +1000,34 @@ const drawSynthwaveBg = (ctx: CanvasRenderingContext2D, w: number, h: number) =>
   for (let y = sy; y < sy + sr; y += 16) ctx.fillRect(sx - sr - 10, y, (sr + 10) * 2, Math.max(3, (y - sy) / 5));
 
   const hz = h * 0.5;
-  synthwaveOffset = (synthwaveOffset + 4) % 50;
-  ctx.save(); ctx.shadowColor = '#ec4899'; ctx.shadowBlur = 10; ctx.strokeStyle = '#ec4899'; ctx.lineWidth = 2.5;
+
+  // 1. Batch Vertical Lines with shadowBlur
+  ctx.save();
+  ctx.shadowColor = '#ec4899';
+  ctx.shadowBlur = 10;
+  ctx.strokeStyle = '#ec4899';
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
   for (let i = 0; i <= 12; i++) {
     const xT = (w / 12) * i;
-    ctx.beginPath(); ctx.moveTo(xT, hz); ctx.lineTo(w / 2 + (xT - w / 2) * 5, h); ctx.stroke();
+    ctx.moveTo(xT, hz);
+    ctx.lineTo(w / 2 + (xT - w / 2) * 5, h);
   }
+  ctx.stroke();
+  ctx.restore();
+
+  // 2. Draw Horizontal Lines without shadowBlur (extremely fast)
+  synthwaveOffset = (synthwaveOffset + 4) % 50;
+  ctx.save();
+  ctx.lineWidth = 1.5;
   for (let y = hz; y < h; y += 35) {
     const ay = y + synthwaveOffset;
     const alpha = Math.min(1, (ay - hz) / (h - hz));
     ctx.strokeStyle = `rgba(236,72,153,${alpha})`;
-    ctx.beginPath(); ctx.moveTo(0, ay); ctx.lineTo(w, ay); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(0, ay);
+    ctx.lineTo(w, ay);
+    ctx.stroke();
   }
   ctx.restore();
 };
