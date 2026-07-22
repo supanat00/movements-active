@@ -49,7 +49,7 @@ export default function PoseTracker({
   const mediaRecorderRef  = useRef<MediaRecorder | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
 
-  const [isReady, setIsReady]           = useState(false);
+  const [vision, setVision]             = useState<any>(null);
   const [cameraError, setCameraError]   = useState<string | null>(null);
   const [loadProgress, setLoadProgress] = useState(0);
   const [loadStatus,   setLoadStatus]   = useState('กำลังเชื่อมต่อระบบ AI...');
@@ -60,26 +60,35 @@ export default function PoseTracker({
     uiStateRef.current = { gamePoints, globalTime, currentExercise, gameStatus, countdownValue, removeBackground, bgType, bgVideoUrl };
   }, [onPoseDetected, onRecordingComplete, gamePoints, globalTime, currentExercise, gameStatus, countdownValue, removeBackground, bgType, bgVideoUrl]);
 
-  // ── Init tasks-vision models and UI images ────────────────────────────────
-  const logoImgRef = useRef<HTMLImageElement | null>(null);
-  
+  const bgImageLoadedRef = useRef<boolean>(false);
+  const logoImgRef       = useRef<HTMLImageElement | null>(null);
+
   useEffect(() => {
     if (bgType === 'image') {
       const img = new Image();
       img.src = '/game_bg.webp';
-      if (img.complete) {
+      img.onload = () => {
         staticBgImgRef.current = img;
-      } else {
-        img.onload = () => { staticBgImgRef.current = img; };
+        bgImageLoadedRef.current = true;
+      };
+      img.onerror = () => {
+        console.warn('/game_bg.webp failed to load');
+        bgImageLoadedRef.current = true; // prevent hanging
+      };
+      if (img.complete && img.naturalWidth > 0) {
+        staticBgImgRef.current = img;
+        bgImageLoadedRef.current = true;
       }
+    } else {
+      bgImageLoadedRef.current = true;
     }
     
     const logo = new Image();
     logo.src = '/logo.webp';
-    if (logo.complete) {
+    logo.onload = () => { logoImgRef.current = logo; };
+    logo.onerror = () => { console.warn('/logo.webp failed to load'); };
+    if (logo.complete && logo.naturalWidth > 0) {
       logoImgRef.current = logo;
-    } else {
-      logo.onload = () => { logoImgRef.current = logo; };
     }
   }, [bgType]);
 
@@ -176,14 +185,13 @@ export default function PoseTracker({
     setLoadStatus('กำลังโหลด AI Runtime...');
     (async () => {
       try {
-        const vision = await FilesetResolver.forVisionTasks(
+        const visionObj = await FilesetResolver.forVisionTasks(
           'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm'
         );
         if (!alive) return;
         setLoadProgress(20);
         setLoadStatus('กำลังโหลดโมเดล AI...');
-        setIsReady(true);
-        // Store resolvers in window for main effect
+        setVision(visionObj);
       } catch (e) {
         console.error('FilesetResolver failed', e);
       }
@@ -193,10 +201,7 @@ export default function PoseTracker({
 
   // ── Core camera + render loop ──────────────────────────────────────────────
   useEffect(() => {
-    if (!isReady || !videoRef.current) return;
-
-    const vision = (window as any).__visionFileset;
-    if (!vision) return;
+    if (!vision || !videoRef.current) return;
 
     let poseLandmarker: PoseLandmarker | null = null;
     let imageSegmenter: ImageSegmenter | null = null;
@@ -235,6 +240,28 @@ export default function PoseTracker({
       return { instance, delegate: 'CPU' };
     };
 
+    let isCameraStreamReady = false;
+    let isPoseModelReady    = false;
+
+    const checkAllReady = () => {
+      if (!alive || !isCameraStreamReady || !isPoseModelReady) return;
+      setLoadProgress(95);
+      setLoadStatus('กำลังเริ่มต้นระบบ...');
+
+      let retries = 0;
+      const finalize = () => {
+        retries++;
+        if (bgType === 'image' && !bgImageLoadedRef.current && retries < 10) {
+          setTimeout(finalize, 100);
+          return;
+        }
+        setLoadProgress(100);
+        setLoadStatus('พร้อมแล้ว!');
+        if (onSystemReady) onSystemReady();
+      };
+      finalize();
+    };
+
     const initModels = async () => {
       const poseOptions = {
         baseOptions: {
@@ -257,50 +284,43 @@ export default function PoseTracker({
         outputConfidenceMasks: false,
       };
 
+      // ── 1. Start camera in parallel ──────────────────────────────────
+      setLoadStatus('กำลังเปิดกล้อง...');
+      startCamera();
+
+      // ── 2. Load critical PoseLandmarker model ─────────────────────────
+      setLoadStatus('กำลังโหลดระบบตรวจจับท่าทาง...');
+      setLoadProgress(30);
       try {
-        // ── 1. Auto-select best delegate for PoseLandmarker ───────────────
-        setLoadStatus('กำลังโหลดระบบตรวจจับท่าทาง...');
-        try {
-          const res = await createAutoModel(
-            poseOptions,
-            (opts) => PoseLandmarker.createFromOptions(vision, opts),
-            'PoseLandmarker'
-          );
-          poseLandmarker = res.instance;
-          poseDelegate   = res.delegate;
-        } catch (e) {
-          console.error('PoseLandmarker init failed:', e);
-        }
-        if (!alive) return;
-        setLoadProgress(55);
-
-        // ── 2. Auto-select best delegate for ImageSegmenter ──────────────
-        setLoadStatus('กำลังโหลดระบบตัดพื้นหลัง...');
-        try {
-          const res = await createAutoModel(
-            segOptions,
-            (opts) => ImageSegmenter.createFromOptions(vision, opts),
-            'ImageSegmenter'
-          );
-          imageSegmenter = res.instance;
-          segDelegate    = res.delegate;
-        } catch (e) {
-          console.warn('[PoseTracker] ImageSegmenter unavailable — background removal disabled');
-        }
-        if (!alive) return;
-        setLoadProgress(80);
-
-        setLoadProgress(90);
-        setLoadStatus('กำลังเปิดกล้อง...');
-        if (!alive) return;
-        setLoadProgress(90);
-        setLoadStatus('กำลังเปิดกล้อง...');
-        if (!alive) return;
-        startCamera();
-      } catch (err) {
-        console.error('Model init failed:', err);
-        if (alive) { setLoadProgress(90); setLoadStatus('กำลังเปิดกล้อง...'); startCamera(); }
+        const res = await createAutoModel(
+          poseOptions,
+          (opts) => PoseLandmarker.createFromOptions(vision, opts),
+          'PoseLandmarker'
+        );
+        poseLandmarker = res.instance;
+        poseDelegate   = res.delegate;
+      } catch (e) {
+        console.error('PoseLandmarker init failed:', e);
       }
+      if (!alive) return;
+      
+      isPoseModelReady = true;
+      setLoadProgress(75);
+      checkAllReady();
+
+      // ── 3. Load optional ImageSegmenter in background (non-blocking) ──
+      createAutoModel(
+        segOptions,
+        (opts) => ImageSegmenter.createFromOptions(vision, opts),
+        'ImageSegmenter'
+      ).then(res => {
+        if (!alive) return;
+        imageSegmenter = res.instance;
+        segDelegate    = res.delegate;
+        console.info('[PoseTracker] ImageSegmenter ready in background');
+      }).catch(e => {
+        console.warn('[PoseTracker] ImageSegmenter background load failed:', e);
+      });
     };
 
     // ── Helper functions for AI execution ──────────────────────────────
@@ -606,19 +626,8 @@ export default function PoseTracker({
         const signalReady = () => {
           if (isSignaled) return;
           isSignaled = true;
-          setLoadProgress(95);
-          setLoadStatus('กำลังเริ่มต้นระบบ...');
-
-          const checkReady = () => {
-            if (bgType === 'image' && !staticBgImgRef.current) {
-              setTimeout(checkReady, 100);
-              return;
-            }
-            setLoadProgress(100);
-            setLoadStatus('พร้อมแล้ว!');
-            if (onSystemReady) onSystemReady();
-          };
-          checkReady();
+          isCameraStreamReady = true;
+          checkAllReady();
         };
 
         if (videoRef.current.readyState >= 1) {
@@ -657,14 +666,14 @@ export default function PoseTracker({
       poseLandmarker?.close();
       imageSegmenter?.close();
     };
-  }, [isReady]);
+  }, [vision]);
 
   return (
     <div className="absolute inset-0 w-full h-full bg-black overflow-hidden">
-      {/* Preloading overlay — shown until 100% */}
+      {/* Preloading overlay — shown on top until 100% ready */}
       {loadProgress < 100 && !cameraError && (
         <div
-          className="absolute inset-0 z-30 flex flex-col items-center justify-center px-10"
+          className="absolute inset-0 z-[100] flex flex-col items-center justify-center px-10"
           style={{ background: 'linear-gradient(160deg, #0a0a1a 0%, #0d1b2a 50%, #0a0a1a 100%)' }}
         >
           {/* Animated glow orb */}
@@ -706,7 +715,7 @@ export default function PoseTracker({
       )}
       {/* Camera error state */}
       {cameraError && (
-        <div className="absolute inset-0 bg-gray-950 flex flex-col items-center justify-center text-white z-20 p-8">
+        <div className="absolute inset-0 bg-gray-950 flex flex-col items-center justify-center text-white z-[110] p-8">
           <div className="text-6xl mb-5">📷</div>
           <p className="text-center text-base font-semibold whitespace-pre-line leading-relaxed mb-6">{cameraError}</p>
           <button
