@@ -228,14 +228,14 @@ function PoseTracker({
     let alive = true;
     
     const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
-    const FRAME_MS = isMobile ? 45 : 30; // Limit rendering loop max FPS to ~22 (mobile) or ~33 (desktop) to save CPU/GPU overhead
+    const FRAME_MS = 0; // Run at 60 FPS (no cap)
     let lastRenderTime = 0;
     
     // Performance Throttling Settings
     let lastPoseRunTime = 0;
     let lastSegRunTime = 0;
-    const poseThrottleMs = isMobile ? 40 : 33;  // Pose detection capped at 25 FPS (mobile) and 30 FPS (desktop)
-    let segThrottleMs = isMobile ? 100 : 50;  // Default CPU segmentation throttle values (optimized)
+    const poseThrottleMs = 0;  // Run pose detection at 60 FPS (no cap)
+    let segThrottleMs = 0;  // Run segmentation at 60 FPS (no cap)
 
     const MODEL_BASE = 'https://storage.googleapis.com/mediapipe-models';
 
@@ -399,8 +399,11 @@ function PoseTracker({
       
       setLoadProgress(70);
 
-      // Try GPU delegate first (even on mobile) for maximum performance, fallback to CPU on error
-      const segLoader = createAutoModel(segOptions, (opts) => ImageSegmenter.createFromOptions(visionObj, opts), 'ImageSegmenter');
+      // Force CPU delegate on mobile for 100% reliable execution (bypasses WebGL/GPU texture rendering bugs that cause segmentation to fail silently)
+      const segLoader = isMobile
+        ? ImageSegmenter.createFromOptions(visionObj, { ...segOptions, baseOptions: { ...segOptions.baseOptions, delegate: 'CPU' as const } })
+            .then(instance => ({ instance, delegate: 'CPU' as const }))
+        : createAutoModel(segOptions, (opts) => ImageSegmenter.createFromOptions(visionObj, opts), 'ImageSegmenter');
 
       segLoader.then(res => {
         if (!alive) return;
@@ -409,9 +412,9 @@ function PoseTracker({
         
         // Dynamically adjust throttling speed depending on the active delegate:
         if (res.delegate === 'GPU') {
-          segThrottleMs = isMobile ? 40 : 16; // GPU: 60 FPS on desktop (16ms) and 25 FPS on mobile (40ms)
+          segThrottleMs = 0; // GPU: Run at 60 FPS (no cap)
         } else {
-          segThrottleMs = isMobile ? 100 : 50; // CPU: 20 FPS on desktop (50ms) and 10 FPS on mobile (100ms)
+          segThrottleMs = isMobile ? 33 : 16; // CPU: 30 FPS on mobile (33ms), 60 FPS on desktop (16ms) to prevent freezing
         }
         
         console.info(`[PoseTracker] ImageSegmenter ready in background (${res.delegate}) - Throttle: ${segThrottleMs}ms`);
