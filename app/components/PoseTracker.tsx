@@ -62,6 +62,7 @@ function PoseTracker({
   const lastRawLandmarksRef = useRef<any[] | null>(null);
   const bfsQueueRef         = useRef<Int32Array | null>(null);
   const visitedRef          = useRef<Uint8Array | null>(null);
+  const segVideoFrameRef    = useRef<HTMLCanvasElement | null>(null); // holds the video frame matching the current mask
 
   const onPoseDetectedRef      = useRef(onPoseDetected);
   const onRecordingCompleteRef = useRef(onRecordingComplete);
@@ -234,7 +235,7 @@ function PoseTracker({
     let lastPoseRunTime = 0;
     let lastSegRunTime = 0;
     const poseThrottleMs = isMobile ? 40 : 33;  // Pose detection capped at 25 FPS (mobile) and 30 FPS (desktop)
-    let segThrottleMs = isMobile ? 150 : 80;  // Default CPU segmentation throttle values
+    let segThrottleMs = isMobile ? 100 : 50;  // Default CPU segmentation throttle values (optimized)
 
     const MODEL_BASE = 'https://storage.googleapis.com/mediapipe-models';
 
@@ -412,9 +413,9 @@ function PoseTracker({
         
         // Dynamically adjust throttling speed depending on the active delegate:
         if (res.delegate === 'GPU') {
-          segThrottleMs = isMobile ? 45 : 33; // GPU capped at 22 FPS (mobile) and 30 FPS (desktop) to save resources
+          segThrottleMs = isMobile ? 40 : 16; // GPU: 60 FPS on desktop (16ms) and 25 FPS on mobile (40ms)
         } else {
-          segThrottleMs = isMobile ? 150 : 80; // CPU is slower, throttle more to keep UI thread responsive
+          segThrottleMs = isMobile ? 100 : 50; // CPU: 20 FPS on desktop (50ms) and 10 FPS on mobile (100ms)
         }
         
         console.info(`[PoseTracker] ImageSegmenter ready in background (${res.delegate}) - Throttle: ${segThrottleMs}ms`);
@@ -467,6 +468,20 @@ function PoseTracker({
       const { removeBackground } = uiStateRef.current;
       if (!removeBackground) return;
       try {
+        const vW = videoRef.current.videoWidth;
+        const vH = videoRef.current.videoHeight;
+        if (vW === 0 || vH === 0) return;
+
+        // Capture the video frame at the exact moment we start the segmentation
+        if (!offscreenRef.current) offscreenRef.current = document.createElement('canvas');
+        const offCanvas = offscreenRef.current;
+        if (offCanvas.width !== vW || offCanvas.height !== vH) {
+          offCanvas.width = vW;
+          offCanvas.height = vH;
+        }
+        const offCtx = offCanvas.getContext('2d')!;
+        offCtx.drawImage(videoRef.current, 0, 0, vW, vH);
+
         imageSegmenter.segmentForVideo(videoRef.current, nowMs, (result) => {
           const categoryMask = result.categoryMask || result.confidenceMasks?.[0];
           if (categoryMask) {
@@ -579,6 +594,18 @@ function PoseTracker({
 
               tCtx.putImageData(imgData, 0, 0);
               hasValidSegMaskRef.current = personPixels > 10;
+
+              // Copy the captured offscreen video frame to segVideoFrameRef if mask is valid
+              if (hasValidSegMaskRef.current) {
+                if (!segVideoFrameRef.current) segVideoFrameRef.current = document.createElement('canvas');
+                const sv = segVideoFrameRef.current;
+                if (sv.width !== vW || sv.height !== vH) {
+                  sv.width = vW;
+                  sv.height = vH;
+                }
+                const svCtx = sv.getContext('2d')!;
+                svCtx.drawImage(offCanvas, 0, 0, vW, vH);
+              }
             } catch (e) {
               console.warn('MPMask error:', e);
             }
@@ -671,12 +698,16 @@ function PoseTracker({
           // Draw mask on main canvas first (mirrored)
           ctx.save();
           ctx.translate(TARGET_W, 0); ctx.scale(-1, 1);
+          
+          // Apply a light blur to the mask to feather the edges, making the cutout soft and natural like Google Meet
+          ctx.filter = 'blur(4px)';
           ctx.drawImage(segMaskDataRef.current, offsetX, offsetY, drawW, drawH);
           
           // Crop source to keep only the mask shape
+          ctx.filter = 'none';
           ctx.globalCompositeOperation = 'source-in';
-          // Draw camera feed
-          ctx.drawImage(videoRef.current, offsetX, offsetY, drawW, drawH);
+          // Draw camera feed (synchronized with the mask frame to eliminate lagging cutout edges)
+          ctx.drawImage(segVideoFrameRef.current || videoRef.current, offsetX, offsetY, drawW, drawH);
           ctx.restore();
 
           // Draw background behind the person shape
