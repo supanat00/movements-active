@@ -222,11 +222,6 @@ export default function PoseTracker({
     let alive = true;
     let frameCount = 0;
     
-    // Debug variables
-    let lastFpsTime = 0;
-    let fpsCount = 0;
-    let currentFps = 0;
-
     const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
     const FRAME_MS = isMobile ? 33 : 0; // ~30fps throttle on mobile for performance
     let lastRenderTime = 0;
@@ -235,7 +230,7 @@ export default function PoseTracker({
     let lastPoseRunTime = 0;
     let lastSegRunTime = 0;
     const POSE_THROTTLE_MS = isMobile ? 33 : 0;  // 30 FPS on mobile, run every frame on desktop
-    const SEG_THROTTLE_MS = isMobile ? 33 : 0;   // 30 FPS on mobile, run every frame on desktop for perfect mask alignment
+    const SEG_THROTTLE_MS = isMobile ? 120 : 0;  // 8 FPS on mobile (CPU), run every frame on desktop (GPU)
 
     const MODEL_BASE = 'https://storage.googleapis.com/mediapipe-models';
 
@@ -352,7 +347,15 @@ export default function PoseTracker({
       setLoadProgress(70);
 
       // ── 3. Load optional ImageSegmenter in background (non-blocking) ──
-      const segLoader = createAutoModel(segOptions, (opts) => ImageSegmenter.createFromOptions(visionObj, opts), 'ImageSegmenter');
+      // Force CPU delegate on mobile for 100% reliable execution (bypasses WebGL texture bugs)
+      const useCpuForSeg = isMobile;
+      const segOptsWithDelegate = useCpuForSeg
+        ? { ...segOptions, baseOptions: { ...segOptions.baseOptions, delegate: 'CPU' as const } }
+        : segOptions;
+
+      const segLoader = useCpuForSeg
+        ? ImageSegmenter.createFromOptions(visionObj, segOptsWithDelegate).then(instance => ({ instance, delegate: 'CPU' as const }))
+        : createAutoModel(segOptions, (opts) => ImageSegmenter.createFromOptions(visionObj, opts), 'ImageSegmenter');
 
       segLoader.then(res => {
         if (!alive) return;
@@ -364,18 +367,9 @@ export default function PoseTracker({
       });
     };
 
-    // ── Helper to calculate scale and offset with a zoom limit ───────────
+    // ── Helper to calculate scale and offset for aspect-fill full screen ──
     const getScaleParams = (vW: number, vH: number, targetW: number, targetH: number) => {
-      let scale = Math.max(targetW / vW, targetH / vH);
-      
-      // Cap scale for landscape streams drawn on portrait canvas to avoid excessive digital zoom
-      if (vW > vH && targetH > targetW) {
-        const maxAllowedScale = (targetW / vW) * 1.5;
-        if (scale > maxAllowedScale) {
-          scale = maxAllowedScale;
-        }
-      }
-      
+      const scale   = Math.max(targetW / vW, targetH / vH);
       const drawW   = vW * scale;
       const drawH   = vH * scale;
       const offsetX = (targetW - drawW) / 2;
@@ -666,34 +660,6 @@ export default function PoseTracker({
           ctx.fillText('🏆', TARGET_W / 2, TARGET_H / 2 - 80);
           ctx.fillStyle = '#facc15'; ctx.font = 'bold 80px sans-serif';
           ctx.fillText(`SCORE: ${gamePoints}`, TARGET_W / 2, TARGET_H / 2 + 60);
-        }
-
-        // ── 4. Debug / FPS Overlay ───────────────────────────────────────
-        // Calculate rendering frame rate
-        fpsCount++;
-        const nowMs = performance.now();
-        if (nowMs - lastFpsTime >= 1000) {
-          currentFps = fpsCount;
-          fpsCount = 0;
-          lastFpsTime = nowMs;
-        }
-
-        // Draw debug overlay when not actively playing/countdown (to keep HUD clean)
-        if (status !== 'playing' && status !== 'countdown') {
-          ctx.save();
-          ctx.fillStyle = 'rgba(0,0,0,0.7)';
-          ctx.fillRect(20, TARGET_H - 130, 280, 100);
-          ctx.strokeStyle = 'rgba(255,255,255,0.2)';
-          ctx.lineWidth = 1.5;
-          ctx.strokeRect(20, TARGET_H - 130, 280, 100);
-          
-          ctx.fillStyle = '#ffffff';
-          ctx.font = 'bold 13px monospace';
-          ctx.fillText(`FPS: ${currentFps}`, 30, TARGET_H - 110);
-          ctx.fillText(`Cam Stream: ${vW}x${vH}`, 30, TARGET_H - 92);
-          ctx.fillText(`Drawing Canvas: ${TARGET_W}x${TARGET_H}`, 30, TARGET_H - 74);
-          ctx.fillText(`AI: Pose(${poseDelegate}) | Seg(${segDelegate})`, 30, TARGET_H - 56);
-          ctx.restore();
         }
       }
 
