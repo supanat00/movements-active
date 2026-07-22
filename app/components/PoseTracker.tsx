@@ -8,6 +8,25 @@ import {
   ImageSegmenterResult,
 } from '@mediapipe/tasks-vision';
 
+// Hook console.error to filter out false-positive Next.js dev overlay triggers from WebAssembly/TFLite stderr logs
+if (typeof window !== 'undefined') {
+  const originalConsoleError = console.error;
+  console.error = (...args: any[]) => {
+    const msg = args[0];
+    if (
+      typeof msg === 'string' &&
+      (msg.includes('XNNPACK') ||
+        msg.includes('TensorFlow') ||
+        msg.includes('Created TensorFlow Lite') ||
+        msg.includes('INFO:'))
+    ) {
+      console.info('[TFLite Info]', ...args);
+      return;
+    }
+    originalConsoleError(...args);
+  };
+}
+
 interface PoseTrackerProps {
   onPoseDetected: (landmarks: any) => void;
   gameStatus: string;
@@ -309,15 +328,21 @@ export default function PoseTracker({
       checkAllReady();
 
       // ── 3. Load optional ImageSegmenter in background (non-blocking) ──
-      createAutoModel(
-        segOptions,
-        (opts) => ImageSegmenter.createFromOptions(vision, opts),
-        'ImageSegmenter'
-      ).then(res => {
+      // Force CPU delegate on mobile for 100% reliable execution (bypasses WebGL texture bugs)
+      const useCpuForSeg = isMobile;
+      const segOptsWithDelegate = useCpuForSeg
+        ? { ...segOptions, baseOptions: { ...segOptions.baseOptions, delegate: 'CPU' as const } }
+        : segOptions;
+
+      const segLoader = useCpuForSeg
+        ? ImageSegmenter.createFromOptions(vision, segOptsWithDelegate).then(instance => ({ instance, delegate: 'CPU' as const }))
+        : createAutoModel(segOptions, (opts) => ImageSegmenter.createFromOptions(vision, opts), 'ImageSegmenter');
+
+      segLoader.then(res => {
         if (!alive) return;
         imageSegmenter = res.instance;
         segDelegate    = res.delegate;
-        console.info('[PoseTracker] ImageSegmenter ready in background');
+        console.info(`[PoseTracker] ImageSegmenter ready in background (${res.delegate})`);
       }).catch(e => {
         console.warn('[PoseTracker] ImageSegmenter background load failed:', e);
       });
@@ -378,7 +403,7 @@ export default function PoseTracker({
               let personPixels = 0;
               for (let i = 0; i < maskBytes.length; i++) {
                 const val = maskBytes[i];
-                const isPerson = val > 0.2;
+                const isPerson = val < 0.5;
                 if (isPerson) personPixels++;
                 const idx = i * 4;
                 buf[idx]     = 255;
@@ -395,7 +420,7 @@ export default function PoseTracker({
           }
         });
       } catch (e) {
-        // Guard against transient frame errors
+        console.error('[runSeg] Error during segmentation execution:', e);
       }
     };
 
@@ -612,8 +637,9 @@ export default function PoseTracker({
         const stream = await navigator.mediaDevices.getUserMedia({
           video: {
             facingMode: 'user',
-            width:  { ideal: isMobile ? 480 : 1280 },
-            height: { ideal: isMobile ? 640 : 720  },
+            width:  isMobile ? { ideal: 720 } : { ideal: 1280 },
+            height: isMobile ? { ideal: 1280 } : { ideal: 720  },
+            frameRate: { ideal: 30 }
           }
         });
         if (!videoRef.current || !alive) return;
