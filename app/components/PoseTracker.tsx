@@ -399,12 +399,8 @@ function PoseTracker({
       
       setLoadProgress(70);
 
-      // ── 3. Load optional ImageSegmenter in background (non-blocking) ──
-      // Force CPU delegate on mobile for 100% reliable execution (bypasses WebGL/GPU texture rendering bugs that cause segmentation to fail silently)
-      const segLoader = isMobile
-        ? ImageSegmenter.createFromOptions(visionObj, { ...segOptions, baseOptions: { ...segOptions.baseOptions, delegate: 'CPU' as const } })
-            .then(instance => ({ instance, delegate: 'CPU' as const }))
-        : createAutoModel(segOptions, (opts) => ImageSegmenter.createFromOptions(visionObj, opts), 'ImageSegmenter');
+      // Try GPU delegate first (even on mobile) for maximum performance, fallback to CPU on error
+      const segLoader = createAutoModel(segOptions, (opts) => ImageSegmenter.createFromOptions(visionObj, opts), 'ImageSegmenter');
 
       segLoader.then(res => {
         if (!alive) return;
