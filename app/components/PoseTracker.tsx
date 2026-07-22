@@ -203,23 +203,14 @@ export default function PoseTracker({
     let animFrameId: number;
     let alive = true;
 
-    // ── Shared frame-loop state (accessible by renderFrame + onLoaded) ────────
-    const isMobile  = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
-    const FRAME_MS  = isMobile ? 33 : 0;   // ~30fps cap on mobile, uncapped on desktop
+    const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+    const FRAME_MS = isMobile ? 33 : 0; // ~30fps throttle on mobile for performance
     let lastRenderTime = 0;
     let segFrameCount  = 0;
-    let hasRVFC        = false;             // set in onLoaded once camera starts
-    let runPoseFn: ((t: number) => void) | null = null;
-    let runSegFn:  ((t: number) => void) | null = null;
 
     const MODEL_BASE = 'https://storage.googleapis.com/mediapipe-models';
 
     const initModels = async () => {
-      // Low-spec detection: ≤2 CPU cores or ≤2 GB RAM → skip segmenter to save resources
-      const cores = navigator.hardwareConcurrency ?? 4;
-      const mem   = (navigator as any).deviceMemory ?? 4;
-      const isLowSpec = cores <= 2 || mem <= 2;
-
       const poseOptions = {
         baseOptions: {
           modelAssetPath: `${MODEL_BASE}/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task`,
@@ -243,7 +234,7 @@ export default function PoseTracker({
       };
 
       try {
-        // ── Load pose first (critical path) ─────────────────────────────────────
+        // ── 1. Load pose model ─────────────────────────────────────
         setLoadStatus('กำลังโหลดระบบตรวจจับท่าทาง...');
         try {
           poseLandmarker = await PoseLandmarker.createFromOptions(vision, poseOptions);
@@ -256,27 +247,22 @@ export default function PoseTracker({
         if (!alive) return;
         setLoadProgress(55);
 
-        // ── Load segmenter only on non-low-spec devices (non-critical) ───────────
-        if (isLowSpec) {
-          console.info('[PoseTracker] Low-spec device — skipping segmenter');
-          setLoadProgress(80);
-        } else {
-          setLoadStatus('กำลังโหลดระบบตัดพื้นหลัง...');
+        // ── 2. Load segmenter model ───────────────────────────────
+        setLoadStatus('กำลังโหลดระบบตัดพื้นหลัง...');
+        try {
+          imageSegmenter = await ImageSegmenter.createFromOptions(vision, segOptions);
+        } catch {
           try {
-            imageSegmenter = await ImageSegmenter.createFromOptions(vision, segOptions);
+            imageSegmenter = await ImageSegmenter.createFromOptions(vision, {
+              ...segOptions,
+              baseOptions: { ...segOptions.baseOptions, delegate: 'CPU' as const },
+            });
           } catch {
-            try {
-              imageSegmenter = await ImageSegmenter.createFromOptions(vision, {
-                ...segOptions,
-                baseOptions: { ...segOptions.baseOptions, delegate: 'CPU' as const },
-              });
-            } catch {
-              console.warn('[PoseTracker] Segmenter unavailable — background removal disabled');
-            }
+            console.warn('[PoseTracker] Segmenter unavailable — background removal disabled');
           }
-          if (!alive) return;
-          setLoadProgress(80);
         }
+        if (!alive) return;
+        setLoadProgress(80);
 
         setLoadProgress(90);
         setLoadStatus('กำลังเปิดกล้อง...');
@@ -288,11 +274,77 @@ export default function PoseTracker({
       }
     };
 
-    // ── Master rAF loop (single loop — drives pose/seg on non-rVFC) ─────────
+    // ── Helper functions for AI execution ──────────────────────────────
+    const runPose = (nowMs: number) => {
+      if (!alive || !videoRef.current || !poseLandmarker) return;
+      try {
+        const result = poseLandmarker.detectForVideo(videoRef.current, nowMs);
+        if (result.landmarks?.[0]) {
+          const lms = result.landmarks[0];
+          const vW  = videoRef.current.videoWidth;
+          const vH  = videoRef.current.videoHeight;
+          const cW  = canvasRef.current?.clientWidth  || window.innerWidth;
+          const cH  = canvasRef.current?.clientHeight || window.innerHeight;
+          const sc  = Math.max(cW / vW, cH / vH);
+          const dW  = vW * sc; const dH = vH * sc;
+          const oX  = (cW - dW) / 2; const oY = (cH - dH) / 2;
+          const mapped = lms.map((lm: any) => ({
+            ...lm,
+            x: (oX + lm.x * dW) / cW,
+            y: (oY + lm.y * dH) / cH,
+          }));
+          onPoseDetectedRef.current(mapped);
+        }
+      } catch (e) {
+        // Guard against transient frame errors
+      }
+    };
+
+    const runSeg = (nowMs: number) => {
+      if (!alive || !videoRef.current || !imageSegmenter) return;
+      const { removeBackground } = uiStateRef.current;
+      if (!removeBackground) return;
+      try {
+        imageSegmenter.segmentForVideo(videoRef.current, nowMs, (result) => {
+          const confMask = result.confidenceMasks?.[0];
+          if (confMask) {
+            const w = confMask.width;
+            const h = confMask.height;
+            if (!segMaskDataRef.current) segMaskDataRef.current = document.createElement('canvas');
+            const tc = segMaskDataRef.current;
+            if (tc.width !== w || tc.height !== h) { tc.width = w; tc.height = h; }
+            const tCtx = tc.getContext('2d')!;
+            if (!imgDataRef.current || imgDataRef.current.width !== w || imgDataRef.current.height !== h) {
+              imgDataRef.current = tCtx.createImageData(w, h);
+            }
+            const imgData = imgDataRef.current;
+            try {
+              const f32 = confMask.getAsFloat32Array();
+              const buf = imgData.data;
+              for (let i = 0; i < f32.length; i++) {
+                let v = f32[i];
+                if (v < 0.15) v = 0;
+                else if (v > 0.85) v = 1;
+                else v = (v - 0.15) / 0.70;
+                const idx = i * 4;
+                buf[idx] = 255; buf[idx+1] = 255; buf[idx+2] = 255;
+                buf[idx+3] = v * 255;
+              }
+              tCtx.putImageData(imgData, 0, 0);
+            } catch (e) { console.warn('MPMask error:', e); }
+            confMask.close?.();
+          }
+        });
+      } catch (e) {
+        // Guard against transient frame errors
+      }
+    };
+
+    // ── Master rAF loop ──────────────────────────────────────────────────
     const renderFrame = (timestamp: number) => {
       if (!alive) return;
 
-      // 30fps cap on mobile saves ~50% GPU (33ms ≈ 30fps)
+      // 30fps cap on mobile to prevent GPU thermal throttling
       if (FRAME_MS > 0 && timestamp - lastRenderTime < FRAME_MS) {
         animFrameId = requestAnimationFrame(renderFrame);
         return;
@@ -307,16 +359,9 @@ export default function PoseTracker({
       const ctx = canvasRef.current.getContext('2d');
       if (!ctx) { animFrameId = requestAnimationFrame(renderFrame); return; }
 
-      // Non-rVFC (iOS/low-spec): run AI in same rAF to avoid double loop
-      if (!hasRVFC && videoRef.current.readyState >= 2) {
-        runPoseFn?.(timestamp);
-        segFrameCount++;
-        if (segFrameCount % (isMobile ? 3 : 2) === 0) runSegFn?.(timestamp);
-      }
-
-      // Adaptive canvas: 360×640 on mobile (-75% pixels vs 720×1280)
-      const TARGET_W = isMobile ? 360 : 720;
-      const TARGET_H = isMobile ? 640 : 1280;
+      // Standard logical canvas size (720x1280) so HUD coordinates match exactly
+      const TARGET_W = 720;
+      const TARGET_H = 1280;
       if (canvasRef.current.width !== TARGET_W) {
         canvasRef.current.width  = TARGET_W;
         canvasRef.current.height = TARGET_H;
@@ -324,66 +369,60 @@ export default function PoseTracker({
 
       const vW = videoRef.current.videoWidth;
       const vH = videoRef.current.videoHeight;
-      if (!vW || !vH) { animFrameId = requestAnimationFrame(renderFrame); return; }
-
-      const scale   = Math.max(TARGET_W / vW, TARGET_H / vH);
-      const drawW   = vW * scale;
-      const drawH   = vH * scale;
-      const offsetX = (TARGET_W - drawW) / 2;
-      const offsetY = (TARGET_H - drawH) / 2;
-
-      const { gamePoints, globalTime, currentExercise, countdownValue, gameStatus: status, removeBackground, bgType } = uiStateRef.current;
-
-      // ── 1. Always draw mirrored camera first (base layer) ───────────────
-      ctx.save();
-      ctx.translate(TARGET_W, 0); ctx.scale(-1, 1);
-      ctx.drawImage(videoRef.current, offsetX, offsetY, drawW, drawH);
-      ctx.restore();
-
-      // Skip heavy compositing on passive states (idle/preview/win/lose)
-      if (status === 'idle' || status === 'preview' || status === 'win' || status === 'lose') {
-        animFrameId = requestAnimationFrame(renderFrame);
-        return;
-      }
-
-      // ── 2. If removeBackground: overlay synthetic bg + composited person ─────
-      if (removeBackground) {
-        // Draw the background
-        const bgVideoEl = bgVideoRef.current;
-        if (bgType === 'video' && bgVideoEl && bgVideoEl.readyState >= 2) {
-          const bs = Math.max(TARGET_W / bgVideoEl.videoWidth, TARGET_H / bgVideoEl.videoHeight);
-          ctx.drawImage(bgVideoEl,
-            (TARGET_W - bgVideoEl.videoWidth * bs) / 2, (TARGET_H - bgVideoEl.videoHeight * bs) / 2,
-            bgVideoEl.videoWidth * bs, bgVideoEl.videoHeight * bs);
-        } else if (bgType === 'image' && staticBgImgRef.current) {
-          const img = staticBgImgRef.current;
-          const bs = Math.max(TARGET_W / img.width, TARGET_H / img.height);
-          ctx.drawImage(img,
-            (TARGET_W - img.width * bs) / 2, (TARGET_H - img.height * bs) / 2,
-            img.width * bs, img.height * bs);
-        } else if (bgType === 'synthwave') {
-          drawSynthwaveBg(ctx, TARGET_W, TARGET_H);
-        } else {
-          drawNeonGridBg(ctx, TARGET_W, TARGET_H);
+      if (vW > 0 && vH > 0 && videoRef.current.readyState >= 2) {
+        // Execute AI tasks directly in loop
+        runPose(timestamp);
+        segFrameCount++;
+        if (segFrameCount % (isMobile ? 2 : 1) === 0) {
+          runSeg(timestamp);
         }
 
-        // Overlay person on top of background using segmentation mask
-        if (segMaskDataRef.current) {
-          const maskSource = segMaskDataRef.current;
-          
-          if (maskSource.width > 0 && maskSource.height > 0) {
+        const scale   = Math.max(TARGET_W / vW, TARGET_H / vH);
+        const drawW   = vW * scale;
+        const drawH   = vH * scale;
+        const offsetX = (TARGET_W - drawW) / 2;
+        const offsetY = (TARGET_H - drawH) / 2;
+
+        const { gamePoints, globalTime, currentExercise, countdownValue, gameStatus: status, removeBackground, bgType } = uiStateRef.current;
+
+        // 1. Draw camera feed base layer
+        ctx.save();
+        ctx.translate(TARGET_W, 0); ctx.scale(-1, 1);
+        ctx.drawImage(videoRef.current, offsetX, offsetY, drawW, drawH);
+        ctx.restore();
+
+        // 2. Background Removal Overlay (if enabled)
+        if (removeBackground) {
+          const bgVideoEl = bgVideoRef.current;
+          if (bgType === 'video' && bgVideoEl && bgVideoEl.readyState >= 2) {
+            const bs = Math.max(TARGET_W / bgVideoEl.videoWidth, TARGET_H / bgVideoEl.videoHeight);
+            ctx.drawImage(bgVideoEl,
+              (TARGET_W - bgVideoEl.videoWidth * bs) / 2, (TARGET_H - bgVideoEl.videoHeight * bs) / 2,
+              bgVideoEl.videoWidth * bs, bgVideoEl.videoHeight * bs);
+          } else if (bgType === 'image' && staticBgImgRef.current) {
+            const img = staticBgImgRef.current;
+            const bs = Math.max(TARGET_W / img.width, TARGET_H / img.height);
+            ctx.drawImage(img,
+              (TARGET_W - img.width * bs) / 2, (TARGET_H - img.height * bs) / 2,
+              img.width * bs, img.height * bs);
+          } else if (bgType === 'synthwave') {
+            drawSynthwaveBg(ctx, TARGET_W, TARGET_H);
+          } else {
+            drawNeonGridBg(ctx, TARGET_W, TARGET_H);
+          }
+
+          if (segMaskDataRef.current && segMaskDataRef.current.width > 0) {
+            const maskSource = segMaskDataRef.current;
             if (!maskCanvasRef.current) maskCanvasRef.current = document.createElement('canvas');
             const mc = maskCanvasRef.current;
             if (mc.width !== TARGET_W || mc.height !== TARGET_H) { mc.width = TARGET_W; mc.height = TARGET_H; }
             const mCtx = mc.getContext('2d')!;
-            
             mCtx.clearRect(0, 0, TARGET_W, TARGET_H);
             mCtx.save();
             mCtx.translate(TARGET_W, 0); mCtx.scale(-1, 1);
             mCtx.drawImage(maskSource, offsetX, offsetY, drawW, drawH);
             mCtx.restore();
 
-            // Person canvas: mirrored video cut by blurred mask
             if (!offscreenRef.current) offscreenRef.current = document.createElement('canvas');
             const oc = offscreenRef.current;
             if (oc.width !== TARGET_W || oc.height !== TARGET_H) { oc.width = TARGET_W; oc.height = TARGET_H; }
@@ -396,161 +435,120 @@ export default function PoseTracker({
             oCtx.globalCompositeOperation = 'destination-in';
             oCtx.drawImage(mc, 0, 0);
             oCtx.globalCompositeOperation = 'source-over';
-
             ctx.drawImage(oc, 0, 0);
+          } else {
+            ctx.save();
+            ctx.translate(TARGET_W, 0); ctx.scale(-1, 1);
+            ctx.drawImage(videoRef.current, offsetX, offsetY, drawW, drawH);
+            ctx.restore();
           }
-        } else {
-           // If mask is completely missing, draw the camera back on top as a fallback
-           ctx.save();
-           ctx.translate(TARGET_W, 0); ctx.scale(-1, 1);
-           ctx.drawImage(videoRef.current, offsetX, offsetY, drawW, drawH);
-           ctx.restore();
         }
-      }
 
-      // ── 3. HUD ───────────────────────────────────────────────────────────────
-      if (status === 'countdown') {
-        const cdValue = uiStateRef.current.countdownValue;
-        if (cdValue !== undefined && cdValue !== null) {
+        // 3. HUD Layer
+        if (status === 'countdown') {
+          const cdValue = uiStateRef.current.countdownValue;
+          if (cdValue !== undefined && cdValue !== null) {
+            ctx.save();
+            ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+            ctx.font = 'italic 900 250px sans-serif';
+            const text = cdValue > 0 ? cdValue.toString() : 'GO!';
+            const x = TARGET_W / 2; const y = TARGET_H / 2;
+            ctx.lineWidth = 15; ctx.strokeStyle = '#06b6d4';
+            ctx.strokeText(text, x, y);
+            ctx.fillStyle = '#ffffff'; ctx.fillText(text, x, y);
+            ctx.shadowColor = 'rgba(0,0,0,0.8)';
+            ctx.shadowBlur = 20; ctx.shadowOffsetX = 0; ctx.shadowOffsetY = 10;
+            ctx.fillText(text, x, y);
+            ctx.restore();
+          }
+        }
+        if (status === 'playing') {
           ctx.save();
-          ctx.textAlign = 'center';
-          ctx.textBaseline = 'middle';
-          ctx.font = 'italic 900 250px sans-serif';
-          
-          const text = cdValue > 0 ? cdValue.toString() : 'GO!';
-          const x = TARGET_W / 2;
-          const y = TARGET_H / 2;
-
-          // Outline
-          ctx.lineWidth = 15;
-          ctx.strokeStyle = '#06b6d4'; // cyan-500
-          ctx.strokeText(text, x, y);
-
-          // Fill
+          ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
           ctx.fillStyle = '#ffffff';
-          ctx.fillText(text, x, y);
-          
-          // Shadow/glow effect
+          ctx.font = 'bold 22px sans-serif';
           ctx.shadowColor = 'rgba(0,0,0,0.8)';
-          ctx.shadowBlur = 20;
-          ctx.shadowOffsetX = 0;
-          ctx.shadowOffsetY = 10;
-          ctx.fillText(text, x, y);
+          ctx.shadowBlur = 4; ctx.shadowOffsetX = 0; ctx.shadowOffsetY = 2;
+          ctx.fillText('SCORE', 110, 55);
+          ctx.font = 'italic 900 80px sans-serif';
+          ctx.shadowColor = 'rgba(0,51,102,0.8)';
+          ctx.shadowBlur = 12; ctx.shadowOffsetX = 3; ctx.shadowOffsetY = 3;
+          ctx.fillText(`${gamePoints}`, 110, 130);
 
+          if (logoImgRef.current) {
+            const logoW = 180;
+            const logoH = (logoImgRef.current.height / logoImgRef.current.width) * logoW;
+            ctx.shadowColor = 'rgba(255,255,255,0.4)';
+            ctx.shadowBlur = 10; ctx.shadowOffsetX = 0; ctx.shadowOffsetY = 4;
+            ctx.drawImage(logoImgRef.current, (TARGET_W - logoW) / 2, 25, logoW, logoH);
+          }
+
+          ctx.shadowColor = 'rgba(0,0,0,0.8)';
+          ctx.shadowBlur = 4; ctx.shadowOffsetX = 0; ctx.shadowOffsetY = 2;
+          ctx.font = 'bold 22px sans-serif';
+          ctx.fillText('TIME', TARGET_W - 110, 55);
+
+          const secVal = Math.floor(Math.max(0, globalTime));
+          const msVal  = Math.floor(Math.max(0, (globalTime - secVal) * 100));
+          const sStr   = secVal.toString().padStart(2, '0');
+          const msStr  = msVal.toString().padStart(2, '0');
+          const digits = [sStr[0], sStr[1], ':', msStr[0], msStr[1]];
+          const startX = TARGET_W - 200; const startY = 70;
+          let curX = startX;
+          digits.forEach((d) => {
+            if (d === ':') {
+              ctx.font = 'bold 32px sans-serif';
+              ctx.fillStyle = '#ffffff';
+              ctx.fillText(':', curX + 6, startY + 32);
+              curX += 14;
+            } else {
+              ctx.fillStyle = 'rgba(255,255,255,0.25)';
+              ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+              ctx.lineWidth = 1.5;
+              ctx.beginPath();
+              ctx.roundRect(curX, startY, 34, 46, 8);
+              ctx.fill(); ctx.stroke();
+              ctx.font = 'bold 30px sans-serif';
+              ctx.fillStyle = '#ffffff'; ctx.textAlign = 'center';
+              ctx.fillText(d, curX + 17, startY + 34);
+              curX += 40;
+            }
+          });
+
+          const getExName = (ex?: string) => {
+            if (ex === 'squats') return 'สควอช';
+            if (ex === 'high_knees') return 'วิ่งเข่าสูง';
+            return 'กระโดดตบ';
+          };
+          const exBannerText = `${getExName(currentExercise)} ให้มากที่สุด`;
+          ctx.font = 'italic 900 24px sans-serif';
+          const textW = ctx.measureText(exBannerText).width;
+          const bannerW = textW + 50; const bannerH = 46;
+          const bannerX = (TARGET_W - bannerW) / 2; const bannerY = 120;
+          const pGrad = ctx.createLinearGradient(bannerX, 0, bannerX + bannerW, 0);
+          pGrad.addColorStop(0, 'rgba(29, 78, 216, 0.6)');
+          pGrad.addColorStop(0.5, 'rgba(6, 182, 212, 0.6)');
+          pGrad.addColorStop(1, 'rgba(29, 78, 216, 0.6)');
+          ctx.fillStyle = pGrad;
+          ctx.strokeStyle = 'rgba(165, 243, 252, 0.8)';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.roundRect(bannerX, bannerY, bannerW, bannerH, 23);
+          ctx.fill(); ctx.stroke();
+          ctx.fillStyle = '#ffffff';
+          ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+          ctx.shadowColor = 'rgba(0,0,0,0.6)'; ctx.shadowBlur = 4;
+          ctx.fillText(exBannerText, TARGET_W / 2, bannerY + bannerH / 2);
           ctx.restore();
         }
-      }
-      if (status === 'playing') {
-        ctx.save();
 
-        // 1. Top Left: SCORE
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'alphabetic';
-        ctx.fillStyle = '#ffffff';
-        ctx.font = 'bold 22px sans-serif';
-        ctx.shadowColor = 'rgba(0,0,0,0.8)';
-        ctx.shadowBlur = 4; ctx.shadowOffsetX = 0; ctx.shadowOffsetY = 2;
-        ctx.fillText('SCORE', 110, 55);
-
-        ctx.font = 'italic 900 80px sans-serif';
-        ctx.shadowColor = 'rgba(0,51,102,0.8)';
-        ctx.shadowBlur = 12; ctx.shadowOffsetX = 3; ctx.shadowOffsetY = 3;
-        ctx.fillText(`${gamePoints}`, 110, 130);
-
-        // 2. Top Center: LOGO
-        if (logoImgRef.current) {
-          const logoW = 180;
-          const logoH = (logoImgRef.current.height / logoImgRef.current.width) * logoW;
-          ctx.shadowColor = 'rgba(255,255,255,0.4)';
-          ctx.shadowBlur = 10; ctx.shadowOffsetX = 0; ctx.shadowOffsetY = 4;
-          ctx.drawImage(logoImgRef.current, (TARGET_W - logoW) / 2, 25, logoW, logoH);
+        if (status === 'ending') {
+          ctx.fillStyle = 'rgba(0,0,0,0.7)'; ctx.fillRect(0, 0, TARGET_W, TARGET_H);
+          ctx.textAlign = 'center'; ctx.font = 'bold 120px sans-serif';
+          ctx.fillText('🏆', TARGET_W / 2, TARGET_H / 2 - 80);
+          ctx.fillStyle = '#facc15'; ctx.font = 'bold 80px sans-serif';
+          ctx.fillText(`SCORE: ${gamePoints}`, TARGET_W / 2, TARGET_H / 2 + 60);
         }
-
-        // 3. Top Right: TIME (Glassmorphic digit boxes)
-        ctx.shadowColor = 'rgba(0,0,0,0.8)';
-        ctx.shadowBlur = 4; ctx.shadowOffsetX = 0; ctx.shadowOffsetY = 2;
-        ctx.font = 'bold 22px sans-serif';
-        ctx.fillText('TIME', TARGET_W - 110, 55);
-
-        const secVal = Math.floor(Math.max(0, globalTime));
-        const msVal = Math.floor(Math.max(0, (globalTime - secVal) * 100));
-        const sStr = secVal.toString().padStart(2, '0');
-        const msStr = msVal.toString().padStart(2, '0');
-        const digits = [sStr[0], sStr[1], ':', msStr[0], msStr[1]];
-
-        const startX = TARGET_W - 200;
-        const startY = 70;
-        let curX = startX;
-
-        digits.forEach((d) => {
-          if (d === ':') {
-            ctx.font = 'bold 32px sans-serif';
-            ctx.fillStyle = '#ffffff';
-            ctx.fillText(':', curX + 6, startY + 32);
-            curX += 14;
-          } else {
-            // Draw glass Box
-            ctx.fillStyle = 'rgba(255,255,255,0.25)';
-            ctx.strokeStyle = 'rgba(255,255,255,0.5)';
-            ctx.lineWidth = 1.5;
-            ctx.beginPath();
-            ctx.roundRect(curX, startY, 34, 46, 8);
-            ctx.fill();
-            ctx.stroke();
-
-            // Digit text
-            ctx.font = 'bold 30px sans-serif';
-            ctx.fillStyle = '#ffffff';
-            ctx.textAlign = 'center';
-            ctx.fillText(d, curX + 17, startY + 34);
-            curX += 40;
-          }
-        });
-
-        // 4. Exercise Banner (Below Logo)
-        const getExName = (ex?: string) => {
-          if (ex === 'squats') return 'สควอช';
-          if (ex === 'high_knees') return 'วิ่งเข่าสูง';
-          return 'กระโดดตบ';
-        };
-        const exBannerText = `${getExName(currentExercise)} ให้มากที่สุด`;
-        ctx.font = 'italic 900 24px sans-serif';
-        const textW = ctx.measureText(exBannerText).width;
-        const bannerW = textW + 50;
-        const bannerH = 46;
-        const bannerX = (TARGET_W - bannerW) / 2;
-        const bannerY = 120;
-
-        // Draw Pill Gradient Background
-        const pGrad = ctx.createLinearGradient(bannerX, 0, bannerX + bannerW, 0);
-        pGrad.addColorStop(0, 'rgba(29, 78, 216, 0.6)');
-        pGrad.addColorStop(0.5, 'rgba(6, 182, 212, 0.6)');
-        pGrad.addColorStop(1, 'rgba(29, 78, 216, 0.6)');
-        ctx.fillStyle = pGrad;
-        ctx.strokeStyle = 'rgba(165, 243, 252, 0.8)';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.roundRect(bannerX, bannerY, bannerW, bannerH, 23);
-        ctx.fill();
-        ctx.stroke();
-
-        // Banner Text
-        ctx.fillStyle = '#ffffff';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.shadowColor = 'rgba(0,0,0,0.6)';
-        ctx.shadowBlur = 4;
-        ctx.fillText(exBannerText, TARGET_W / 2, bannerY + bannerH / 2);
-
-        ctx.restore();
-      }
-
-      if (status === 'ending') {
-        ctx.fillStyle = 'rgba(0,0,0,0.7)'; ctx.fillRect(0, 0, TARGET_W, TARGET_H);
-        ctx.textAlign = 'center'; ctx.font = 'bold 120px sans-serif';
-        ctx.fillText('🏆', TARGET_W / 2, TARGET_H / 2 - 80);
-        ctx.fillStyle = '#facc15'; ctx.font = 'bold 80px sans-serif';
-        ctx.fillText(`SCORE: ${gamePoints}`, TARGET_W / 2, TARGET_H / 2 + 60);
       }
 
       animFrameId = requestAnimationFrame(renderFrame);
@@ -559,8 +557,6 @@ export default function PoseTracker({
     // ── Camera start ──────────────────────────────────────────────────────────
     const startCamera = async () => {
       try {
-        // Adaptive resolution: lower on mobile to reduce GPU/CPU load
-        const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
         const stream = await navigator.mediaDevices.getUserMedia({
           video: {
             facingMode: 'user',
@@ -569,14 +565,18 @@ export default function PoseTracker({
           }
         });
         if (!videoRef.current || !alive) return;
+        
         videoRef.current.srcObject = stream;
-        const onLoaded = () => {
-          videoRef.current?.play();
+        // Call play immediately for Safari / Mobile WebKit compatibility
+        videoRef.current.play().catch(err => console.warn('Video play catch:', err));
 
+        let isSignaled = false;
+        const signalReady = () => {
+          if (isSignaled) return;
+          isSignaled = true;
           setLoadProgress(95);
           setLoadStatus('กำลังเริ่มต้นระบบ...');
 
-          // Wait for background image before signaling ready
           const checkReady = () => {
             if (bgType === 'image' && !staticBgImgRef.current) {
               setTimeout(checkReady, 100);
@@ -587,93 +587,18 @@ export default function PoseTracker({
             if (onSystemReady) onSystemReady();
           };
           checkReady();
-
-          // Set rVFC flag — read by renderFrame to know which path is active
-          hasRVFC = 'requestVideoFrameCallback' in HTMLVideoElement.prototype;
-
-          const runPose = (nowMs: number) => {
-            if (!alive || !videoRef.current || !poseLandmarker) return;
-            const result = poseLandmarker.detectForVideo(videoRef.current, nowMs);
-            if (result.landmarks?.[0]) {
-              const lms = result.landmarks[0];
-              const vW  = videoRef.current.videoWidth;
-              const vH  = videoRef.current.videoHeight;
-              const cW  = canvasRef.current?.clientWidth  || window.innerWidth;
-              const cH  = canvasRef.current?.clientHeight || window.innerHeight;
-              const sc  = Math.max(cW / vW, cH / vH);
-              const dW  = vW * sc; const dH = vH * sc;
-              const oX  = (cW - dW) / 2; const oY = (cH - dH) / 2;
-              const mapped = lms.map((lm: any) => ({
-                ...lm,
-                x: (oX + lm.x * dW) / cW,
-                y: (oY + lm.y * dH) / cH,
-              }));
-              onPoseDetectedRef.current(mapped);
-            }
-          };
-
-          const runSeg = (nowMs: number) => {
-            if (!alive || !videoRef.current || !imageSegmenter) return;
-            const { removeBackground } = uiStateRef.current;
-            if (!removeBackground) return;
-            imageSegmenter.segmentForVideo(videoRef.current, nowMs, (result) => {
-              const confMask = result.confidenceMasks?.[0];
-              if (confMask) {
-                const w = confMask.width;
-                const h = confMask.height;
-                if (!segMaskDataRef.current) segMaskDataRef.current = document.createElement('canvas');
-                const tc = segMaskDataRef.current;
-                if (tc.width !== w || tc.height !== h) { tc.width = w; tc.height = h; }
-                const tCtx = tc.getContext('2d')!;
-                if (!imgDataRef.current || imgDataRef.current.width !== w || imgDataRef.current.height !== h) {
-                  imgDataRef.current = tCtx.createImageData(w, h);
-                }
-                const imgData = imgDataRef.current;
-                try {
-                  const f32 = confMask.getAsFloat32Array();
-                  const buf = imgData.data;
-                  for (let i = 0; i < f32.length; i++) {
-                    let v = f32[i];
-                    if (v < 0.15) v = 0;
-                    else if (v > 0.85) v = 1;
-                    else v = (v - 0.15) / 0.70;
-                    const idx = i * 4;
-                    buf[idx] = 255; buf[idx+1] = 255; buf[idx+2] = 255;
-                    buf[idx+3] = v * 255;
-                  }
-                  tCtx.putImageData(imgData, 0, 0);
-                } catch (e) { console.warn('MPMask error:', e); }
-                confMask.close?.();
-              }
-            });
-          };
-
-          // Expose to renderFrame via shared closure variables
-          runPoseFn = runPose;
-          runSegFn  = runSeg;
-
-          // rVFC path: fires at video frame rate (~30fps)
-          // Only drives pose+seg — rendering stays in the single rAF loop
-          if (hasRVFC) {
-            const rvcfLoop = (_: any, m: any) => {
-              if (!alive || !videoRef.current) return;
-              runPose(m.mediaTime * 1000);
-              segFrameCount++;
-              if (segFrameCount % 2 === 0) runSeg(m.mediaTime * 1000);
-              (videoRef.current as any).requestVideoFrameCallback(rvcfLoop);
-            };
-            (videoRef.current as any).requestVideoFrameCallback(rvcfLoop);
-          }
-          // Non-rVFC (iOS/low-spec): renderFrame handles pose+seg inline
-
-          renderFrame(0); // kick off single master rAF loop
         };
 
         if (videoRef.current.readyState >= 1) {
-          onLoaded();
+          signalReady();
         } else {
-          videoRef.current.onloadedmetadata = onLoaded;
+          videoRef.current.onloadedmetadata = signalReady;
+          videoRef.current.onloadeddata = signalReady;
+          setTimeout(signalReady, 800); // Fallback guarantee
         }
+
+        // Kickoff render loop
+        animFrameId = requestAnimationFrame(renderFrame);
       } catch (err: any) {
         console.error('Camera error:', err);
         if (!alive) return;
