@@ -72,6 +72,21 @@ export default function PoseTracker({
   const [cameraError, setCameraError]   = useState<string | null>(null);
   const [loadProgress, setLoadProgress] = useState(0);
   const [loadStatus,   setLoadStatus]   = useState('กำลังเชื่อมต่อระบบ AI...');
+  const [canvasHeight, setCanvasHeight] = useState(1280);
+
+  useEffect(() => {
+    const handleResize = () => {
+      if (canvasRef.current) {
+        const parent = canvasRef.current.parentElement;
+        const pw = parent?.clientWidth || window.innerWidth || 360;
+        const ph = parent?.clientHeight || window.innerHeight || 640;
+        setCanvasHeight(Math.round(720 * (ph / pw)));
+      }
+    };
+    handleResize();
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   useEffect(() => {
     onPoseDetectedRef.current      = onPoseDetected;
@@ -399,17 +414,14 @@ export default function PoseTracker({
               } else {
                 maskBytes = (categoryMask as any).getAsFloat32Array();
               }
-              const buf = imgData.data;
+              const buf32 = new Uint32Array(imgData.data.buffer);
               let personPixels = 0;
               for (let i = 0; i < maskBytes.length; i++) {
-                const val = maskBytes[i];
-                const isPerson = val < 0.5;
+                const isPerson = maskBytes[i] < 0.5;
                 if (isPerson) personPixels++;
-                const idx = i * 4;
-                buf[idx]     = 255;
-                buf[idx + 1] = 255;
-                buf[idx + 2] = 255;
-                buf[idx + 3] = isPerson ? 255 : 0;
+                // 0xffffffff is white (RGBA 255, 255, 255, 255) in little-endian systems
+                // 0x00000000 is transparent
+                buf32[i] = isPerson ? 0xffffffff : 0x00000000;
               }
               tCtx.putImageData(imgData, 0, 0);
               hasValidSegMaskRef.current = personPixels > 10;
@@ -443,10 +455,9 @@ export default function PoseTracker({
       const ctx = canvasRef.current.getContext('2d');
       if (!ctx) { animFrameId = requestAnimationFrame(renderFrame); return; }
 
-      // Standard logical canvas size (720x1280) so HUD coordinates match exactly
       const TARGET_W = 720;
-      const TARGET_H = 1280;
-      if (canvasRef.current.width !== TARGET_W) {
+      const TARGET_H = canvasHeight;
+      if (canvasRef.current.width !== TARGET_W || canvasRef.current.height !== TARGET_H) {
         canvasRef.current.width  = TARGET_W;
         canvasRef.current.height = TARGET_H;
       }
@@ -457,7 +468,7 @@ export default function PoseTracker({
         // Execute AI tasks directly in loop
         runPose(timestamp);
         segFrameCount++;
-        if (segFrameCount % (isMobile ? 2 : 1) === 0) {
+        if (segFrameCount % (isMobile ? 3 : 1) === 0) {
           runSeg(timestamp);
         }
 
@@ -758,7 +769,7 @@ export default function PoseTracker({
           className="absolute top-0 left-0 w-1 h-1 opacity-0 pointer-events-none"
           playsInline autoPlay loop muted crossOrigin="anonymous" />
       )}
-      <canvas ref={canvasRef} width={720} height={1280} className="absolute top-0 left-0 w-full h-full object-cover pointer-events-none" />
+      <canvas ref={canvasRef} width={720} height={canvasHeight} className="absolute top-0 left-0 w-full h-full object-fill pointer-events-none" />
     </div>
   );
 }
