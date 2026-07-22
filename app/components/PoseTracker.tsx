@@ -468,7 +468,7 @@ export default function PoseTracker({
         // Execute AI tasks directly in loop
         runPose(timestamp);
         segFrameCount++;
-        if (segFrameCount % (isMobile ? 3 : 1) === 0) {
+        if (segFrameCount % (isMobile ? 2 : 1) === 0) {
           runSeg(timestamp);
         }
 
