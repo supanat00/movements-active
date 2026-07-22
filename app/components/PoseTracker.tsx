@@ -258,16 +258,64 @@ export default function PoseTracker({
 
     // ── Camera start ──────────────────────────────────────────────────────────
     const startCamera = async () => {
+      if (!alive || !videoRef.current) return false;
+
+      const tryMediaDevices = async (constraints: MediaStreamConstraints) => {
+        try {
+          return await navigator.mediaDevices.getUserMedia(constraints);
+        } catch (e) {
+          return null;
+        }
+      };
+
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({
+        let stream: MediaStream | null = null;
+        
+        // Try 1: Portrait 720x1280 (Native Portrait HD)
+        stream = await tryMediaDevices({
           video: {
             facingMode: 'user',
-            width:  { ideal: 1080 },
-            height: { ideal: 1920 },
-            aspectRatio: { ideal: 9/16 },
+            width: { ideal: 720 },
+            height: { ideal: 1280 },
             frameRate: { ideal: 30 }
           }
         });
+        
+        // Try 2: Portrait 480x640 (Native Portrait SD)
+        if (!stream) {
+          stream = await tryMediaDevices({
+            video: {
+              facingMode: 'user',
+              width: { ideal: 480 },
+              height: { ideal: 640 },
+              frameRate: { ideal: 30 }
+            }
+          });
+        }
+        
+        // Try 3: High-Res Portrait 1080x1920
+        if (!stream) {
+          stream = await tryMediaDevices({
+            video: {
+              facingMode: 'user',
+              width: { ideal: 1080 },
+              height: { ideal: 1920 },
+              frameRate: { ideal: 30 }
+            }
+          });
+        }
+        
+        // Try 4: Generic facing user fallback
+        if (!stream) {
+          stream = await tryMediaDevices({
+            video: { facingMode: 'user' }
+          });
+        }
+
+        if (!stream) {
+          throw new Error('Cannot access front camera');
+        }
+
         if (!videoRef.current || !alive) {
           stream.getTracks().forEach(t => t.stop());
           return false;
@@ -367,9 +415,18 @@ export default function PoseTracker({
       });
     };
 
-    // ── Helper to calculate scale and offset for aspect-fill full screen ──
+    // ── Helper to calculate scale and offset with a zoom limit ───────────
     const getScaleParams = (vW: number, vH: number, targetW: number, targetH: number) => {
-      const scale   = Math.max(targetW / vW, targetH / vH);
+      let scale = Math.max(targetW / vW, targetH / vH);
+      
+      // Cap scale for landscape streams drawn on portrait canvas to avoid excessive digital zoom
+      if (vW > vH && targetH > targetW) {
+        const maxAllowedScale = (targetW / vW) * 1.4;
+        if (scale > maxAllowedScale) {
+          scale = maxAllowedScale;
+        }
+      }
+      
       const drawW   = vW * scale;
       const drawH   = vH * scale;
       const offsetX = (targetW - drawW) / 2;
