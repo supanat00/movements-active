@@ -37,6 +37,7 @@ export default function PoseTracker({
   const maskCanvasRef    = useRef<HTMLCanvasElement | null>(null);
   const segMaskDataRef   = useRef<HTMLCanvasElement | null>(null); // holds the converted mask canvas
   const imgDataRef       = useRef<ImageData | null>(null);         // reused ImageData (avoid GC churn)
+  const hasValidSegMaskRef = useRef<boolean>(false);
 
   const onPoseDetectedRef      = useRef(onPoseDetected);
   const onRecordingCompleteRef = useRef(onRecordingComplete);
@@ -183,7 +184,6 @@ export default function PoseTracker({
         setLoadStatus('กำลังโหลดโมเดล AI...');
         setIsReady(true);
         // Store resolvers in window for main effect
-        (window as any).__visionFileset = vision;
       } catch (e) {
         console.error('FilesetResolver failed', e);
       }
@@ -200,6 +200,9 @@ export default function PoseTracker({
 
     let poseLandmarker: PoseLandmarker | null = null;
     let imageSegmenter: ImageSegmenter | null = null;
+    let poseDelegate: 'GPU' | 'CPU' = 'GPU';
+    let segDelegate:  'GPU' | 'CPU' = 'GPU';
+
     let animFrameId: number;
     let alive = true;
 
@@ -210,11 +213,32 @@ export default function PoseTracker({
 
     const MODEL_BASE = 'https://storage.googleapis.com/mediapipe-models';
 
+    // ── Helper to automatically try GPU first, then fallback to CPU ──────
+    const createAutoModel = async <T,>(
+      baseOptions: any,
+      createFn: (opts: any) => Promise<T>,
+      modelName: string
+    ): Promise<{ instance: T; delegate: 'GPU' | 'CPU' }> => {
+      // 1. Try GPU
+      try {
+        const gpuOpts = { ...baseOptions, baseOptions: { ...baseOptions.baseOptions, delegate: 'GPU' as const } };
+        const instance = await createFn(gpuOpts);
+        console.info(`[PoseTracker] ${modelName} auto-selected: GPU`);
+        return { instance, delegate: 'GPU' };
+      } catch (gpuErr: any) {
+        console.warn(`[PoseTracker] ${modelName} GPU failed (${gpuErr?.message || gpuErr}), auto-switching to CPU...`);
+      }
+      // 2. Fallback CPU
+      const cpuOpts = { ...baseOptions, baseOptions: { ...baseOptions.baseOptions, delegate: 'CPU' as const } };
+      const instance = await createFn(cpuOpts);
+      console.info(`[PoseTracker] ${modelName} auto-selected: CPU`);
+      return { instance, delegate: 'CPU' };
+    };
+
     const initModels = async () => {
       const poseOptions = {
         baseOptions: {
           modelAssetPath: `${MODEL_BASE}/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task`,
-          delegate: 'GPU' as const,
         },
         runningMode: 'VIDEO' as const,
         numPoses: 1,
@@ -223,47 +247,52 @@ export default function PoseTracker({
         minTrackingConfidence: 0.5,
         outputSegmentationMasks: false,
       };
+
       const segOptions = {
         baseOptions: {
           modelAssetPath: `${MODEL_BASE}/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.tflite`,
-          delegate: 'GPU' as const,
         },
         runningMode: 'VIDEO' as const,
-        outputCategoryMask: false,
-        outputConfidenceMasks: true,
+        outputCategoryMask: true,
+        outputConfidenceMasks: false,
       };
 
       try {
-        // ── 1. Load pose model ─────────────────────────────────────
+        // ── 1. Auto-select best delegate for PoseLandmarker ───────────────
         setLoadStatus('กำลังโหลดระบบตรวจจับท่าทาง...');
         try {
-          poseLandmarker = await PoseLandmarker.createFromOptions(vision, poseOptions);
-        } catch {
-          poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
-            ...poseOptions,
-            baseOptions: { ...poseOptions.baseOptions, delegate: 'CPU' as const },
-          });
+          const res = await createAutoModel(
+            poseOptions,
+            (opts) => PoseLandmarker.createFromOptions(vision, opts),
+            'PoseLandmarker'
+          );
+          poseLandmarker = res.instance;
+          poseDelegate   = res.delegate;
+        } catch (e) {
+          console.error('PoseLandmarker init failed:', e);
         }
         if (!alive) return;
         setLoadProgress(55);
 
-        // ── 2. Load segmenter model ───────────────────────────────
+        // ── 2. Auto-select best delegate for ImageSegmenter ──────────────
         setLoadStatus('กำลังโหลดระบบตัดพื้นหลัง...');
         try {
-          imageSegmenter = await ImageSegmenter.createFromOptions(vision, segOptions);
-        } catch {
-          try {
-            imageSegmenter = await ImageSegmenter.createFromOptions(vision, {
-              ...segOptions,
-              baseOptions: { ...segOptions.baseOptions, delegate: 'CPU' as const },
-            });
-          } catch {
-            console.warn('[PoseTracker] Segmenter unavailable — background removal disabled');
-          }
+          const res = await createAutoModel(
+            segOptions,
+            (opts) => ImageSegmenter.createFromOptions(vision, opts),
+            'ImageSegmenter'
+          );
+          imageSegmenter = res.instance;
+          segDelegate    = res.delegate;
+        } catch (e) {
+          console.warn('[PoseTracker] ImageSegmenter unavailable — background removal disabled');
         }
         if (!alive) return;
         setLoadProgress(80);
 
+        setLoadProgress(90);
+        setLoadStatus('กำลังเปิดกล้อง...');
+        if (!alive) return;
         setLoadProgress(90);
         setLoadStatus('กำลังเปิดกล้อง...');
         if (!alive) return;
@@ -306,10 +335,10 @@ export default function PoseTracker({
       if (!removeBackground) return;
       try {
         imageSegmenter.segmentForVideo(videoRef.current, nowMs, (result) => {
-          const confMask = result.confidenceMasks?.[0];
-          if (confMask) {
-            const w = confMask.width;
-            const h = confMask.height;
+          const categoryMask = result.categoryMask || result.confidenceMasks?.[0];
+          if (categoryMask) {
+            const w = categoryMask.width;
+            const h = categoryMask.height;
             if (!segMaskDataRef.current) segMaskDataRef.current = document.createElement('canvas');
             const tc = segMaskDataRef.current;
             if (tc.width !== w || tc.height !== h) { tc.width = w; tc.height = h; }
@@ -319,20 +348,30 @@ export default function PoseTracker({
             }
             const imgData = imgDataRef.current;
             try {
-              const f32 = confMask.getAsFloat32Array();
+              let maskBytes: Uint8Array | Float32Array;
+              if ('getAsUint8Array' in categoryMask) {
+                maskBytes = categoryMask.getAsUint8Array();
+              } else {
+                maskBytes = (categoryMask as any).getAsFloat32Array();
+              }
               const buf = imgData.data;
-              for (let i = 0; i < f32.length; i++) {
-                let v = f32[i];
-                if (v < 0.15) v = 0;
-                else if (v > 0.85) v = 1;
-                else v = (v - 0.15) / 0.70;
+              let personPixels = 0;
+              for (let i = 0; i < maskBytes.length; i++) {
+                const val = maskBytes[i];
+                const isPerson = val > 0.2;
+                if (isPerson) personPixels++;
                 const idx = i * 4;
-                buf[idx] = 255; buf[idx+1] = 255; buf[idx+2] = 255;
-                buf[idx+3] = v * 255;
+                buf[idx]     = 255;
+                buf[idx + 1] = 255;
+                buf[idx + 2] = 255;
+                buf[idx + 3] = isPerson ? 255 : 0;
               }
               tCtx.putImageData(imgData, 0, 0);
-            } catch (e) { console.warn('MPMask error:', e); }
-            confMask.close?.();
+              hasValidSegMaskRef.current = personPixels > 10;
+            } catch (e) {
+              console.warn('MPMask error:', e);
+            }
+            categoryMask.close?.();
           }
         });
       } catch (e) {
@@ -385,14 +424,14 @@ export default function PoseTracker({
 
         const { gamePoints, globalTime, currentExercise, countdownValue, gameStatus: status, removeBackground, bgType } = uiStateRef.current;
 
-        // 1. Draw camera feed base layer
+        // 1. Draw camera feed base layer (Always drawn!)
         ctx.save();
         ctx.translate(TARGET_W, 0); ctx.scale(-1, 1);
         ctx.drawImage(videoRef.current, offsetX, offsetY, drawW, drawH);
         ctx.restore();
 
-        // 2. Background Removal Overlay (if enabled)
-        if (removeBackground) {
+        // 2. Background Removal Overlay (Only if removeBackground AND valid seg mask is available)
+        if (removeBackground && hasValidSegMaskRef.current && segMaskDataRef.current) {
           const bgVideoEl = bgVideoRef.current;
           if (bgType === 'video' && bgVideoEl && bgVideoEl.readyState >= 2) {
             const bs = Math.max(TARGET_W / bgVideoEl.videoWidth, TARGET_H / bgVideoEl.videoHeight);
@@ -411,37 +450,30 @@ export default function PoseTracker({
             drawNeonGridBg(ctx, TARGET_W, TARGET_H);
           }
 
-          if (segMaskDataRef.current && segMaskDataRef.current.width > 0) {
-            const maskSource = segMaskDataRef.current;
-            if (!maskCanvasRef.current) maskCanvasRef.current = document.createElement('canvas');
-            const mc = maskCanvasRef.current;
-            if (mc.width !== TARGET_W || mc.height !== TARGET_H) { mc.width = TARGET_W; mc.height = TARGET_H; }
-            const mCtx = mc.getContext('2d')!;
-            mCtx.clearRect(0, 0, TARGET_W, TARGET_H);
-            mCtx.save();
-            mCtx.translate(TARGET_W, 0); mCtx.scale(-1, 1);
-            mCtx.drawImage(maskSource, offsetX, offsetY, drawW, drawH);
-            mCtx.restore();
+          const maskSource = segMaskDataRef.current;
+          if (!maskCanvasRef.current) maskCanvasRef.current = document.createElement('canvas');
+          const mc = maskCanvasRef.current;
+          if (mc.width !== TARGET_W || mc.height !== TARGET_H) { mc.width = TARGET_W; mc.height = TARGET_H; }
+          const mCtx = mc.getContext('2d')!;
+          mCtx.clearRect(0, 0, TARGET_W, TARGET_H);
+          mCtx.save();
+          mCtx.translate(TARGET_W, 0); mCtx.scale(-1, 1);
+          mCtx.drawImage(maskSource, offsetX, offsetY, drawW, drawH);
+          mCtx.restore();
 
-            if (!offscreenRef.current) offscreenRef.current = document.createElement('canvas');
-            const oc = offscreenRef.current;
-            if (oc.width !== TARGET_W || oc.height !== TARGET_H) { oc.width = TARGET_W; oc.height = TARGET_H; }
-            const oCtx = oc.getContext('2d')!;
-            oCtx.clearRect(0, 0, TARGET_W, TARGET_H);
-            oCtx.save();
-            oCtx.translate(TARGET_W, 0); oCtx.scale(-1, 1);
-            oCtx.drawImage(videoRef.current, offsetX, offsetY, drawW, drawH);
-            oCtx.restore();
-            oCtx.globalCompositeOperation = 'destination-in';
-            oCtx.drawImage(mc, 0, 0);
-            oCtx.globalCompositeOperation = 'source-over';
-            ctx.drawImage(oc, 0, 0);
-          } else {
-            ctx.save();
-            ctx.translate(TARGET_W, 0); ctx.scale(-1, 1);
-            ctx.drawImage(videoRef.current, offsetX, offsetY, drawW, drawH);
-            ctx.restore();
-          }
+          if (!offscreenRef.current) offscreenRef.current = document.createElement('canvas');
+          const oc = offscreenRef.current;
+          if (oc.width !== TARGET_W || oc.height !== TARGET_H) { oc.width = TARGET_W; oc.height = TARGET_H; }
+          const oCtx = oc.getContext('2d')!;
+          oCtx.clearRect(0, 0, TARGET_W, TARGET_H);
+          oCtx.save();
+          oCtx.translate(TARGET_W, 0); oCtx.scale(-1, 1);
+          oCtx.drawImage(videoRef.current, offsetX, offsetY, drawW, drawH);
+          oCtx.restore();
+          oCtx.globalCompositeOperation = 'destination-in';
+          oCtx.drawImage(mc, 0, 0);
+          oCtx.globalCompositeOperation = 'source-over';
+          ctx.drawImage(oc, 0, 0);
         }
 
         // 3. HUD Layer
