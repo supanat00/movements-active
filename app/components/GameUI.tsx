@@ -116,7 +116,7 @@ export default React.memo(function GameUI({
                 <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
               </svg>
             </div>
-            <p className="text-white text-2xl font-black text-center leading-tight drop-shadow-[0_2px_2px_rgba(0,0,0,0.5)]">
+            <p className="text-white text-2xl font-black text-center leading-tight drop-shadow-[0_2px_2px_rgba(0,0,0,0.5)]" style={{ fontFamily: 'Kanit, sans-serif' }}>
               {showWarning[0]}<br />
               {showWarning[1]}
             </p>
