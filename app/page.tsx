@@ -137,6 +137,14 @@ export default function Home() {
     setProcessedVideoUrls({});
   }, []);
 
+  // Automatically process video to MP4 in the background when recording completes.
+  // This prevents the Web Share API from timing out due to lack of a recent user gesture.
+  useEffect(() => {
+    if (rawVideoBlob) {
+      processVideoToMp4('720p').catch(console.error);
+    }
+  }, [rawVideoBlob]);
+
   const handleSystemReady = useCallback(() => {
     setIsSystemReady(true);
   }, []);
@@ -202,6 +210,9 @@ export default function Home() {
     } catch (err) {
       console.error("FFmpeg processing error:", err);
       // Fallback to the raw video URL if processing fails
+      if (recordedVideoUrl) {
+        setProcessedVideoUrls(prev => ({ ...prev, [resolution]: recordedVideoUrl }));
+      }
       return recordedVideoUrl;
     } finally {
       setIsProcessingVideo(false);
@@ -210,33 +221,33 @@ export default function Home() {
 
   const handleSave = async (resolution: '360p' | '720p') => {
     const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+    const url = await processVideoToMp4(resolution);
+    if (!url) return;
 
-    // iOS: <a download> is not supported + FFmpeg WASM requires SharedArrayBuffer
-    // → use Web Share API with raw blob so user can "Save to Photos"
-    if (isIOS && rawVideoBlob) {
+    if (isIOS) {
       try {
-        const ext  = rawVideoBlob.type.includes('mp4') ? 'mp4' : 'mp4';
-        const file = new File([rawVideoBlob], `active-movement.${ext}`, { type: rawVideoBlob.type });
+        const response = await fetch(url);
+        const blob = await response.blob();
+        // Determine correct extension based on type
+        const ext = blob.type.includes('webm') ? 'webm' : 'mp4';
+        const file = new File([blob], `active-movement.${ext}`, { type: blob.type });
+        
         if (navigator.canShare?.({ files: [file] })) {
           await navigator.share({ files: [file], title: 'Active Movement Workout! 🔥' });
-          return;
         }
       } catch (e: any) {
-        if (e?.name !== 'AbortError') console.warn('iOS share failed:', e);
-        return;
+        if (e?.name !== 'AbortError') console.warn('iOS save failed:', e);
       }
+      return;
     }
 
-    // Desktop / Android: FFmpeg re-encode → anchor download
-    const url = await processVideoToMp4(resolution);
-    if (url) {
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `active-movement-${resolution}.mp4`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-    }
+    // Desktop / Android: anchor download
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `active-movement-${resolution}.mp4`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
   };
 
   const handleShare = async () => {
