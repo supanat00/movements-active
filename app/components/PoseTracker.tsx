@@ -746,7 +746,7 @@ function PoseTracker({
           if (cdValue !== undefined && cdValue !== null) {
             ctx.save();
             ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-            ctx.font = 'italic 900 250px sans-serif';
+            ctx.font = 'italic 900 250px "Kanit", sans-serif';
             const text = cdValue > 0 ? cdValue.toString() : 'GO!';
             const x = TARGET_W / 2; const y = TARGET_H / 2;
             ctx.lineWidth = 15; ctx.strokeStyle = '#06b6d4';
@@ -762,11 +762,11 @@ function PoseTracker({
           ctx.save();
           ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
           ctx.fillStyle = '#ffffff';
-          ctx.font = 'bold 22px sans-serif';
+          ctx.font = 'bold 22px "Kanit", sans-serif';
           ctx.shadowColor = 'rgba(0,0,0,0.8)';
           ctx.shadowBlur = 4; ctx.shadowOffsetX = 0; ctx.shadowOffsetY = 2;
           ctx.fillText('SCORE', 110, 55);
-          ctx.font = 'italic 900 80px sans-serif';
+          ctx.font = 'italic 900 80px "Kanit", sans-serif';
           ctx.shadowColor = 'rgba(0,51,102,0.8)';
           ctx.shadowBlur = 12; ctx.shadowOffsetX = 3; ctx.shadowOffsetY = 3;
           ctx.fillText(`${gamePoints}`, 110, 130);
@@ -781,7 +781,7 @@ function PoseTracker({
 
           ctx.shadowColor = 'rgba(0,0,0,0.8)';
           ctx.shadowBlur = 4; ctx.shadowOffsetX = 0; ctx.shadowOffsetY = 2;
-          ctx.font = 'bold 22px sans-serif';
+          ctx.font = 'bold 22px "Kanit", sans-serif';
           ctx.fillText('TIME', TARGET_W - 110, 55);
 
           const secVal = Math.floor(Math.max(0, globalTime));
@@ -793,7 +793,7 @@ function PoseTracker({
           let curX = startX;
           digits.forEach((d) => {
             if (d === ':') {
-              ctx.font = 'bold 32px sans-serif';
+              ctx.font = 'bold 32px "Kanit", sans-serif';
               ctx.fillStyle = '#ffffff';
               ctx.fillText(':', curX + 6, startY + 32);
               curX += 14;
@@ -804,7 +804,7 @@ function PoseTracker({
               ctx.beginPath();
               ctx.roundRect(curX, startY, 34, 46, 8);
               ctx.fill(); ctx.stroke();
-              ctx.font = 'bold 30px sans-serif';
+              ctx.font = 'bold 30px "Kanit", sans-serif';
               ctx.fillStyle = '#ffffff'; ctx.textAlign = 'center';
               ctx.fillText(d, curX + 17, startY + 34);
               curX += 40;
@@ -817,7 +817,7 @@ function PoseTracker({
             return 'กระโดดตบ';
           };
           const exBannerText = `${getExName(currentExercise)} ให้มากที่สุด`;
-          ctx.font = 'italic 900 24px sans-serif';
+          ctx.font = 'italic 900 24px "Kanit", sans-serif';
           const textW = ctx.measureText(exBannerText).width;
           const bannerW = textW + 50; const bannerH = 46;
           const bannerX = (TARGET_W - bannerW) / 2; const bannerY = 120;
@@ -840,9 +840,9 @@ function PoseTracker({
 
         if (status === 'ending') {
           ctx.fillStyle = 'rgba(0,0,0,0.7)'; ctx.fillRect(0, 0, TARGET_W, TARGET_H);
-          ctx.textAlign = 'center'; ctx.font = 'bold 120px sans-serif';
+          ctx.textAlign = 'center'; ctx.font = 'bold 120px "Kanit", sans-serif';
           ctx.fillText('🏆', TARGET_W / 2, TARGET_H / 2 - 80);
-          ctx.fillStyle = '#facc15'; ctx.font = 'bold 80px sans-serif';
+          ctx.fillStyle = '#facc15'; ctx.font = 'bold 80px "Kanit", sans-serif';
           ctx.fillText(`SCORE: ${gamePoints}`, TARGET_W / 2, TARGET_H / 2 + 60);
         }
       }
