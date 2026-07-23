@@ -817,7 +817,8 @@ function PoseTracker({
             return 'กระโดดตบ';
           };
           const exBannerText = `${getExName(currentExercise)} ให้มากที่สุด`;
-          ctx.font = 'italic 900 24px "Kanit", sans-serif';
+          // Remove italic to prevent iOS Safari Canvas measurement and center-alignment bugs
+          ctx.font = '900 24px "Kanit", sans-serif';
           const textW = ctx.measureText(exBannerText).width;
           const bannerW = textW + 50; const bannerH = 46;
           const bannerX = (TARGET_W - bannerW) / 2; const bannerY = 120;
@@ -832,9 +833,12 @@ function PoseTracker({
           ctx.roundRect(bannerX, bannerY, bannerW, bannerH, 23);
           ctx.fill(); ctx.stroke();
           ctx.fillStyle = '#ffffff';
-          ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+          // Use 'left' instead of 'center' as iOS Safari has issues centering some custom fonts
+          ctx.textAlign = 'left'; 
+          ctx.textBaseline = 'middle';
           ctx.shadowColor = 'rgba(0,0,0,0.6)'; ctx.shadowBlur = 4;
-          ctx.fillText(exBannerText, TARGET_W / 2, bannerY + bannerH / 2);
+          // Manually center text based on calculated textW (padding of 25px on left). Shift Y slightly up for Thai ascenders.
+          ctx.fillText(exBannerText, bannerX + 25, bannerY + (bannerH / 2) - 1.5);
           ctx.restore();
         }
 
